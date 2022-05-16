@@ -62,7 +62,7 @@ Ref<Texture2D> EditorResourcePreviewGenerator::generate_from_path(const String &
 		return preview;
 	}
 
-	Ref<Resource> res = ResourceLoader::load(p_path);
+	Ref<Resource> res = ResourceLoader::load_poorly(p_path);
 	if (!res.is_valid()) {
 		return res;
 	}
