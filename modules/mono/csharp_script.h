@@ -343,9 +343,14 @@ class ManagedCallableMiddleman : public Object {
 	GDCLASS(ManagedCallableMiddleman, Object);
 };
 
+class CSharpThreadContext;
+
 class CSharpLanguage : public ScriptLanguage {
+	using StackInfo = ScriptLanguageThreadContext::StackInfo;
+
 	friend class CSharpScript;
 	friend class CSharpInstance;
+	friend class CSharpThreadContext;
 
 	static CSharpLanguage *singleton;
 
@@ -386,16 +391,9 @@ class CSharpLanguage : public ScriptLanguage {
 		StringNameCache();
 	};
 
-	int lang_idx = -1;
-
 	HashMap<String, DotNetScriptLookupInfo> dotnet_script_lookup_map;
 
 	void lookup_script_for_class(GDMonoClass *p_class);
-
-	// For debug_break and debug_break_parse
-	int _debug_parse_err_line = -1;
-	String _debug_parse_err_file;
-	String _debug_error;
 
 	friend class GDMono;
 	void _on_scripts_domain_unloaded();
@@ -422,8 +420,7 @@ public:
 
 	const Mutex &get_language_bind_mutex() { return language_bind_mutex; }
 
-	_FORCE_INLINE_ int get_language_index() { return lang_idx; }
-	void set_language_index(int p_idx);
+	_FORCE_INLINE_ int get_language_index() { return language_index; }
 
 	_FORCE_INLINE_ const StringNameCache &get_string_names() { return string_names; }
 
@@ -458,7 +455,7 @@ public:
 	String get_type() const override;
 	String get_extension() const override;
 	Error execute_file(const String &p_path) override;
-	void init() override;
+	void init(int p_language_index) override;
 	void finish() override;
 
 	void finalize();
@@ -484,18 +481,6 @@ public:
 	virtual String _get_indentation() const;
 	/* TODO? */ void auto_indent_code(String &p_code, int p_from_line, int p_to_line) const override {}
 	/* TODO */ void add_global_constant(const StringName &p_variable, const Variant &p_value) override {}
-
-	/* DEBUGGER FUNCTIONS */
-	String debug_get_error() const override;
-	int debug_get_stack_level_count() const override;
-	int debug_get_stack_level_line(int p_level) const override;
-	String debug_get_stack_level_function(int p_level) const override;
-	String debug_get_stack_level_source(int p_level) const override;
-	/* TODO */ void debug_get_stack_level_locals(int p_level, List<String> *p_locals, List<Variant> *p_values, int p_max_subitems, int p_max_depth) override {}
-	/* TODO */ void debug_get_stack_level_members(int p_level, List<String> *p_members, List<Variant> *p_values, int p_max_subitems, int p_max_depth) override {}
-	/* TODO */ void debug_get_globals(List<String> *p_locals, List<Variant> *p_values, int p_max_subitems, int p_max_depth) override {}
-	/* TODO */ String debug_parse_stack_level_expression(int p_level, const String &p_expression, int p_max_subitems, int p_max_depth) override { return ""; }
-	Vector<StackInfo> debug_get_current_stack_info() override;
 
 	/* PROFILING FUNCTIONS */
 	/* TODO */ void profiling_start() override {}
@@ -527,15 +512,73 @@ public:
 	RBMap<Object *, CSharpScriptBinding>::Element *insert_script_binding(Object *p_object, const CSharpScriptBinding &p_script_binding);
 	bool setup_csharp_script_binding(CSharpScriptBinding &r_script_binding, Object *p_object);
 
-#ifdef DEBUG_ENABLED
-	Vector<StackInfo> stack_trace_get_info(MonoObject *p_stack_trace);
-#endif
-
 	void post_unsafe_reference(Object *p_obj);
 	void pre_unsafe_unreference(Object *p_obj);
 
+	/* DEBUG FUNCTIONS */
+
+	/* TODO */ void debug_get_globals(List<String> *p_globals, List<Variant> *p_values, int p_max_subitems = -1, int p_max_depth = -1) const override{};
+	ScriptLanguageThreadContext &current_thread() override;
+	static CSharpThreadContext &current_thread_implementation();
+
+	/* THREAD CONTEXT FACTORY */
+
+	static CSharpThreadContext *create_thread_context();
+
 	CSharpLanguage();
 	~CSharpLanguage();
+};
+
+class CSharpThreadContext : public ScriptLanguageThreadContext {
+	friend class CSharpLanguage;
+	int _debug_parse_err_line = -1;
+	String _debug_parse_err_file;
+	String _debug_error;
+	Severity _debug_severity;
+	CSharpLanguage &parent;
+	DebugThreadID debug_thread_id;
+	bool is_main;
+	bool has_stack_trace_override;
+	Vector<StackInfo> stack_trace_override;
+
+public:
+	ScriptLanguage *get_language() const override;
+	bool is_main_thread() const override;
+
+	/* DEBUG INFO FUNCTIONS */
+
+	String debug_get_error() const override;
+	int debug_get_stack_level_count() const override;
+	int debug_get_stack_level_line(int p_level) const override;
+	String debug_get_stack_level_function(int p_level) const override;
+	String debug_get_stack_level_source(int p_level) const override;
+	/* TODO */ void debug_get_stack_level_locals(int p_level, List<String> *p_locals, List<Variant> *p_values, int p_max_subitems, int p_max_depth) const override {}
+	/* TODO */ void debug_get_stack_level_members(int p_level, List<String> *p_members, List<Variant> *p_values, int p_max_subitems, int p_max_depth) const override {}
+	/* TODO */ String debug_parse_stack_level_expression(int p_level, const String &p_expression, int p_max_subitems, int p_max_depth) const override { return ""; }
+	Vector<StackInfo> debug_get_current_stack_info() const override;
+	DebugThreadID debug_get_thread_id() const override;
+	Severity debug_get_error_severity() const override;
+
+#ifdef DEBUG_ENABLED
+	Vector<StackInfo> stack_trace_get_info(MonoObject *p_stack_trace) const;
+
+	// Set a specific stack trace to use instead of the current thread state.  Used during exception
+	// reporting.
+	void debug_set_stack_trace_override(const Vector<StackInfo> &p_stack) {
+		has_stack_trace_override = true;
+		stack_trace_override = p_stack;
+	}
+	void debug_clear_stack_trace_override() {
+		has_stack_trace_override = false;
+		stack_trace_override.clear();
+	}
+#endif
+
+	CSharpThreadContext(CSharpLanguage &p_parent, const DebugThreadID &p_debug_thread_id, bool p_is_main) :
+			parent(p_parent) {
+		debug_thread_id = p_debug_thread_id;
+		is_main = p_is_main;
+	}
 };
 
 class ResourceFormatLoaderCSharpScript : public ResourceFormatLoader {

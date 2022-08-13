@@ -1,5 +1,5 @@
 /*************************************************************************/
-/*  register_types.cpp                                                   */
+/*  script_debugger_object.h                                             */
 /*************************************************************************/
 /*                       This file is part of:                           */
 /*                           GODOT ENGINE                                */
@@ -28,58 +28,18 @@
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                */
 /*************************************************************************/
 
-#include "register_types.h"
+#ifndef SCRIPT_DEBUGGER_OBJECT_H
+#define SCRIPT_DEBUGGER_OBJECT_H
 
-#include "core/config/engine.h"
+#include "core/object/class_db.h"
+#include "core/object/object.h"
 
-#include "csharp_script.h"
+// REVISIT: When finished, this can be exposed as a member of EditorDebuggerNode for plugin access.
+class ScriptDebuggerObject : public Object {
+	GDCLASS(ScriptDebuggerObject, Object);
 
-CSharpLanguage *script_language_cs = nullptr;
-Ref<ResourceFormatLoaderCSharpScript> resource_loader_cs;
-Ref<ResourceFormatSaverCSharpScript> resource_saver_cs;
+protected:
+	static void _bind_methods();
+};
 
-mono_bind::GodotSharp *_godotsharp = nullptr;
-
-void initialize_mono_module(ModuleInitializationLevel p_level) {
-	if (p_level != MODULE_INITIALIZATION_LEVEL_SCENE) {
-		return;
-	}
-
-	GDREGISTER_CLASS(CSharpScript);
-
-	_godotsharp = memnew(mono_bind::GodotSharp);
-
-	GDREGISTER_CLASS(mono_bind::GodotSharp);
-	Engine::get_singleton()->add_singleton(Engine::Singleton("GodotSharp", mono_bind::GodotSharp::get_singleton()));
-
-	script_language_cs = memnew(CSharpLanguage);
-	ScriptServer::register_language(script_language_cs);
-
-	resource_loader_cs.instantiate();
-	ResourceLoader::add_resource_format_loader(resource_loader_cs);
-
-	resource_saver_cs.instantiate();
-	ResourceSaver::add_resource_format_saver(resource_saver_cs);
-}
-
-void uninitialize_mono_module(ModuleInitializationLevel p_level) {
-	if (p_level != MODULE_INITIALIZATION_LEVEL_SCENE) {
-		return;
-	}
-
-	ScriptServer::unregister_language(script_language_cs);
-
-	if (script_language_cs) {
-		memdelete(script_language_cs);
-	}
-
-	ResourceLoader::remove_resource_format_loader(resource_loader_cs);
-	resource_loader_cs.unref();
-
-	ResourceSaver::remove_resource_format_saver(resource_saver_cs);
-	resource_saver_cs.unref();
-
-	if (_godotsharp) {
-		memdelete(_godotsharp);
-	}
-}
+#endif // SCRIPT_DEBUGGER_OBJECT_H

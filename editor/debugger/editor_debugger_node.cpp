@@ -161,7 +161,9 @@ void EditorDebuggerNode::_text_editor_stack_goto(const ScriptEditorDebugger *p_d
 	const int line = p_debugger->get_stack_script_line() - 1;
 	emit_signal(SNAME("goto_script_line"), stack_script, line);
 	emit_signal(SNAME("set_execution"), stack_script, line);
-	stack_script.unref(); // Why?!?
+
+	// Release our reference so the resource can unload/reload.
+	stack_script.unref();
 }
 
 void EditorDebuggerNode::_bind_methods() {

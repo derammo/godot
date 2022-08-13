@@ -33,18 +33,21 @@
 
 #include "core/doc_data.h"
 #include "core/io/resource.h"
+#include "core/os/semaphore.h"
+#include "core/os/thread.h"
 #include "core/templates/pair.h"
-#include "core/templates/rb_map.h"
 
 class ScriptLanguage;
 
 typedef void (*ScriptEditRequestFunction)(const String &p_path);
 
 class ScriptServer {
+public:
 	enum {
 		MAX_LANGUAGES = 16
 	};
 
+private:
 	static ScriptLanguage *_languages[MAX_LANGUAGES];
 	static int _language_count;
 	static bool scripting_enabled;
@@ -101,7 +104,6 @@ class Script : public Resource {
 
 protected:
 	virtual bool editor_can_reload_from_file() override { return false; } // this is handled by editor better
-	void _notification(int p_what);
 	static void _bind_methods();
 
 	friend class PlaceHolderScriptInstance;
@@ -116,7 +118,7 @@ protected:
 public:
 	virtual bool can_instantiate() const = 0;
 
-	virtual Ref<Script> get_base_script() const = 0; //for script inheritance
+	virtual Ref<Script> get_base_script() const = 0; // for script inheritance
 
 	virtual bool inherits_script(const Ref<Script> &p_script) const = 0;
 
@@ -148,7 +150,7 @@ public:
 
 	virtual bool get_property_default_value(const StringName &p_property, Variant &r_value) const = 0;
 
-	virtual void update_exports() {} //editor tool
+	virtual void update_exports() {} // editor tool
 	virtual void get_script_method_list(List<MethodInfo> *p_list) const = 0;
 	virtual void get_script_property_list(List<PropertyInfo> *p_list) const = 0;
 
@@ -161,7 +163,7 @@ public:
 
 	virtual const Variant get_rpc_config() const = 0;
 
-	Script() {}
+	Script() = default;
 };
 
 class ScriptInstance {
@@ -202,12 +204,12 @@ public:
 		return String();
 	}
 
-	//this is used by script languages that keep a reference counter of their own
-	//you can make make Ref<> not die when it reaches zero, so deleting the reference
-	//depends entirely from the script
+	// this is used by script languages that keep a reference counter of their own
+	// you can make make Ref<> not die when it reaches zero, so deleting the reference
+	// depends entirely from the script
 
 	virtual void refcount_incremented() {}
-	virtual bool refcount_decremented() { return true; } //return true if it can die
+	virtual bool refcount_decremented() { return true; } // return true if it can die
 
 	virtual Ref<Script> get_script() const = 0;
 
@@ -230,22 +232,127 @@ public:
 
 	ScriptCodeCompletionCache();
 
-	virtual ~ScriptCodeCompletionCache() {}
+	virtual ~ScriptCodeCompletionCache() = default;
+};
+
+// A language-specific debugging context kept in thread-local storage for each thread.  Specialized for each built-in script language
+// and for extension languages in general.  Manufactured by the owning ScriptLanguage specialization.
+// REVISIT: really this could be generalized to not just applying to script languages.  Why shouldn't the EngineDebugger understand
+// stacks not from ScriptLanguage?  This was probably just a choice to stick this into ScriptLanguage because there were no other customers.
+// XXX: maybe won't need to be ref counted once we are correctly holding all threads during debugging and gathering their contexts?
+class ScriptLanguageThreadContext : public RefCounted {
+	GDCLASS(ScriptLanguageThreadContext, RefCounted)
+
+protected:
+	// Holds thread when suspended in the debugger.
+	Semaphore resumption;
+
+	// Number of "next / step over" steps to execute before pausing, or -1 for unrestricted run.
+	int steps_left = -1;
+
+	// Number of stack frames to pop out of before pausing, or -1 for unrestricted run.
+	int frames_left = -1;
+
+	// Hash of system Thread ID for which this context was created; used as opaque tag in debugger, to correlate
+	// contexts from different languages that refer to the same thread.
+	Thread::ID tid = Thread::get_caller_id();
+
+public:
+	struct StackInfo {
+		String file;
+		String func;
+		int line;
+	};
+
+	enum Severity {
+		SEVERITY_NONE = 0,
+
+		// This severity and lower numbered severities are skipped when breakpoint skipping is requested.
+		SEVERITY_BREAKPOINT,
+
+		// Breakpoint requested from code, rather than debugger.
+		SEVERITY_BREAKPOINT_STATEMENT,
+
+		// Warning: name collision with a macro on Windows platform if this is renamed to SEVERITY_ERROR.
+		SEVERITY_NON_FATAL_ERROR,
+
+		// Severities less than this (not inclusive) can be continued in the debugger.
+		SEVERITY_FATAL,
+
+		SEVERITY_NUM_VALUES
+	};
+
+	virtual ScriptLanguage *get_language() const = 0;
+
+	// This API is used in extensions, so this is not necessarily a real Thread::ID
+	// but rather an opaque Variant (packed byte array) that is unique across all
+	// threads and all languages This value is useful only for debugging or as an
+	// index and can't decoded to an OS thread ID.
+	typedef Variant DebugThreadID;
+
+	/* DEBUG INFO FUNCTIONS */
+
+	virtual DebugThreadID debug_get_thread_id() const = 0;
+	virtual String debug_get_error() const = 0;
+	virtual Severity debug_get_error_severity() const = 0;
+	virtual int debug_get_stack_level_count() const = 0;
+	virtual int debug_get_stack_level_line(int p_level) const = 0;
+	virtual String debug_get_stack_level_function(int p_level) const = 0;
+	virtual String debug_get_stack_level_source(int p_level) const = 0;
+	virtual void debug_get_stack_level_locals(int p_level, List<String> *p_locals, List<Variant> *p_values, int p_max_subitems = -1, int p_max_depth = -1) const = 0;
+	virtual void debug_get_stack_level_members(int p_level, List<String> *p_members, List<Variant> *p_values, int p_max_subitems = -1, int p_max_depth = -1) const = 0;
+	virtual ScriptInstance *debug_get_stack_level_instance(int p_level) const { return nullptr; }
+	virtual String debug_parse_stack_level_expression(int p_level, const String &p_expression, int p_max_subitems = -1, int p_max_depth = -1) const = 0;
+
+	virtual Vector<StackInfo> debug_get_current_stack_info() const { return Vector<StackInfo>(); }
+
+	/* STEP EXECUTION FUNCTIONS */
+
+	virtual bool debug_handle_step();
+
+	virtual void debug_step();
+	virtual void debug_next();
+	virtual void debug_step_out();
+	virtual void debug_continue();
+
+	/* FUNCTIONS RELATING TO ACTUAL UNDERLYING THREAD */
+
+	void wait_resume() const {
+		resumption.wait();
+	}
+
+	void resume() const {
+		resumption.post();
+	}
+
+	bool is_dead() const {
+		// XXX implement: associated thread may have died without removing this from all collections
+		return false;
+	}
+
+	virtual bool is_main_thread() const = 0;
 };
 
 class ScriptLanguage : public Object {
 	GDCLASS(ScriptLanguage, Object)
+
+protected:
+	int language_index;
+
 public:
 	virtual String get_name() const = 0;
 
 	/* LANGUAGE FUNCTIONS */
-	virtual void init() = 0;
+
+	virtual void init(int p_language_index);
+	virtual int get_language_index() const;
 	virtual String get_type() const = 0;
 	virtual String get_extension() const = 0;
 	virtual Error execute_file(const String &p_path) = 0;
 	virtual void finish() = 0;
 
 	/* EDITOR FUNCTIONS */
+
 	struct Warning {
 		int start_line = -1, end_line = -1;
 		int leftmost_column = -1, rightmost_column = -1;
@@ -375,38 +482,24 @@ public:
 
 	/* MULTITHREAD FUNCTIONS */
 
-	//some VMs need to be notified of thread creation/exiting to allocate a stack
+	// some VMs need to be notified of thread creation/exiting to allocate a stack
 	virtual void thread_enter() {}
 	virtual void thread_exit() {}
 
-	/* DEBUGGER FUNCTIONS */
-	struct StackInfo {
-		String file;
-		String func;
-		int line;
-	};
-
-	virtual String debug_get_error() const = 0;
-	virtual int debug_get_stack_level_count() const = 0;
-	virtual int debug_get_stack_level_line(int p_level) const = 0;
-	virtual String debug_get_stack_level_function(int p_level) const = 0;
-	virtual String debug_get_stack_level_source(int p_level) const = 0;
-	virtual void debug_get_stack_level_locals(int p_level, List<String> *p_locals, List<Variant> *p_values, int p_max_subitems = -1, int p_max_depth = -1) = 0;
-	virtual void debug_get_stack_level_members(int p_level, List<String> *p_members, List<Variant> *p_values, int p_max_subitems = -1, int p_max_depth = -1) = 0;
-	virtual ScriptInstance *debug_get_stack_level_instance(int p_level) { return nullptr; }
-	virtual void debug_get_globals(List<String> *p_globals, List<Variant> *p_values, int p_max_subitems = -1, int p_max_depth = -1) = 0;
-	virtual String debug_parse_stack_level_expression(int p_level, const String &p_expression, int p_max_subitems = -1, int p_max_depth = -1) = 0;
-
-	virtual Vector<StackInfo> debug_get_current_stack_info() { return Vector<StackInfo>(); }
-
 	virtual void reload_all_scripts() = 0;
 	virtual void reload_tool_script(const Ref<Script> &p_script, bool p_soft_reload) = 0;
+
 	/* LOADER FUNCTIONS */
 
 	virtual void get_recognized_extensions(List<String> *p_extensions) const = 0;
 	virtual void get_public_functions(List<MethodInfo> *p_functions) const = 0;
 	virtual void get_public_constants(List<Pair<String, Variant>> *p_constants) const = 0;
 	virtual void get_public_annotations(List<MethodInfo> *p_annotations) const = 0;
+
+	/* DEBUG FUNCTIONS */
+
+	virtual void debug_get_globals(List<String> *p_globals, List<Variant> *p_values, int p_max_subitems = -1, int p_max_depth = -1) const = 0;
+	virtual ScriptLanguageThreadContext &current_thread() = 0;
 
 	struct ProfilingInfo {
 		StringName signature;
@@ -421,17 +514,17 @@ public:
 	virtual int profiling_get_accumulated_data(ProfilingInfo *p_info_arr, int p_info_max) = 0;
 	virtual int profiling_get_frame_data(ProfilingInfo *p_info_arr, int p_info_max) = 0;
 
-	virtual void *alloc_instance_binding_data(Object *p_object) { return nullptr; } //optional, not used by all languages
-	virtual void free_instance_binding_data(void *p_data) {} //optional, not used by all languages
-	virtual void refcount_incremented_instance_binding(Object *p_object) {} //optional, not used by all languages
-	virtual bool refcount_decremented_instance_binding(Object *p_object) { return true; } //return true if it can die //optional, not used by all languages
+	virtual void *alloc_instance_binding_data(Object *p_object) { return nullptr; } // optional, not used by all languages
+	virtual void free_instance_binding_data(void *p_data) {} // optional, not used by all languages
+	virtual void refcount_incremented_instance_binding(Object *p_object) {} // optional, not used by all languages
+	virtual bool refcount_decremented_instance_binding(Object *p_object) { return true; } // return true if it can die //optional, not used by all languages
 
 	virtual void frame();
 
 	virtual bool handles_global_class_type(const String &p_type) const { return false; }
 	virtual String get_global_class_name(const String &p_path, String *r_base_type = nullptr, String *r_icon_path = nullptr) const { return String(); }
 
-	virtual ~ScriptLanguage() {}
+	virtual ~ScriptLanguage() = default;
 };
 
 extern uint8_t script_encryption_key[32];
@@ -468,7 +561,7 @@ public:
 
 	Object *get_owner() override { return owner; }
 
-	void update(const List<PropertyInfo> &p_properties, const HashMap<StringName, Variant> &p_values); //likely changed in editor
+	void update(const List<PropertyInfo> &p_properties, const HashMap<StringName, Variant> &p_values); // likely changed in editor
 
 	virtual bool is_placeholder() const override { return true; }
 

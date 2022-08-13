@@ -36,7 +36,6 @@
 #include "core/templates/list.h"
 
 class LocalDebugger : public EngineDebugger {
-private:
 	struct ScriptsProfiler;
 
 	ScriptsProfiler *scripts_profiler = nullptr;
@@ -47,10 +46,16 @@ private:
 	Pair<String, int> to_breakpoint(const String &p_line);
 	void print_variables(const List<String> &names, const List<Variant> &values, const String &variable_prefix);
 
+	void _print_stack_header(ScriptLanguageThreadContext &p_focused_thread);
+	void _print_status(ScriptLanguageThreadContext &p_focused_thread, int current_frame);
+	void _print_frame(ScriptLanguageThreadContext &p_focused_thread, int current_frame, int printed_frame);
+
 public:
-	void debug(bool p_can_continue, bool p_is_error_breakpoint);
-	void send_message(const String &p_message, const Array &p_args);
-	void send_error(const String &p_func, const String &p_file, int p_line, const String &p_err, const String &p_descr, bool p_editor_notify, ErrorHandlerType p_type);
+	void debug(ScriptLanguageThreadContext &p_focused_thread) override;
+	void request_debug(const ScriptLanguageThreadContext &p_context) override;
+	void thread_paused(const ScriptLanguageThreadContext &p_context) override;
+	void send_message(const String &p_message, const Array &p_args) override;
+	void send_error(const String &p_func, const String &p_file, int p_line, const String &p_err, const String &p_descr, bool p_editor_notify, ErrorHandlerType p_type) override;
 
 	LocalDebugger();
 	~LocalDebugger();

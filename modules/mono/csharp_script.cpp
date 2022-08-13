@@ -56,7 +56,9 @@
 #include "class_db_api_json.h"
 #endif
 
+#include "core/object/script_language_internals.h"
 #include "godotsharp_dirs.h"
+#include "modules/visual_script/visual_script.h"
 #include "mono_gd/gd_mono_cache.h"
 #include "mono_gd/gd_mono_class.h"
 #include "mono_gd/gd_mono_marshal.h"
@@ -85,6 +87,27 @@ static bool _create_project_solution_if_needed() {
 
 CSharpLanguage *CSharpLanguage::singleton = nullptr;
 
+// This gets initialized for each thread.  If debugging is enabled, it will be
+// accessed and will lazy create a thread local storage context for that thread.
+thread_local ThreadContextRef<CSharpLanguage, CSharpThreadContext> t_current_thread;
+
+// virtual
+ScriptLanguageThreadContext &CSharpLanguage::current_thread() {
+	return t_current_thread.context();
+}
+
+// Privileged access to implementation for local utility code.
+CSharpThreadContext &CSharpLanguage::current_thread_implementation() {
+	return t_current_thread.context();
+}
+
+CSharpThreadContext *CSharpLanguage::create_thread_context() {
+	return memnew(CSharpThreadContext(
+			*singleton,
+			ScriptLanguageInternals::create_thread_id(*singleton, Thread::get_caller_id()),
+			Thread::get_caller_id() == Thread::get_main_id()));
+}
+
 GDNativeInstanceBindingCallbacks CSharpLanguage::_instance_binding_callbacks = {
 	&_instance_binding_create_callback,
 	&_instance_binding_free_callback,
@@ -108,7 +131,8 @@ Error CSharpLanguage::execute_file(const String &p_path) {
 	return OK;
 }
 
-void CSharpLanguage::init() {
+void CSharpLanguage::init(int p_language_index) {
+	ScriptLanguage::init(p_language_index);
 #ifdef DEBUG_METHODS_ENABLED
 	if (OS::get_singleton()->get_cmdline_args().find("--class-db-json")) {
 		class_db_api_to_json("user://class_db_api.json", ClassDB::API_CORE);
@@ -548,11 +572,19 @@ String CSharpLanguage::_get_indentation() const {
 	return "\t";
 }
 
-String CSharpLanguage::debug_get_error() const {
+ScriptLanguage *CSharpThreadContext::get_language() const {
+	return &parent;
+}
+
+bool CSharpThreadContext::is_main_thread() const {
+	return is_main;
+}
+
+String CSharpThreadContext::debug_get_error() const {
 	return _debug_error;
 }
 
-int CSharpLanguage::debug_get_stack_level_count() const {
+int CSharpThreadContext::debug_get_stack_level_count() const {
 	if (_debug_parse_err_line >= 0) {
 		return 1;
 	}
@@ -561,7 +593,7 @@ int CSharpLanguage::debug_get_stack_level_count() const {
 	return 1;
 }
 
-int CSharpLanguage::debug_get_stack_level_line(int p_level) const {
+int CSharpThreadContext::debug_get_stack_level_line(int p_level) const {
 	if (_debug_parse_err_line >= 0) {
 		return _debug_parse_err_line;
 	}
@@ -570,7 +602,7 @@ int CSharpLanguage::debug_get_stack_level_line(int p_level) const {
 	return 1;
 }
 
-String CSharpLanguage::debug_get_stack_level_function(int p_level) const {
+String CSharpThreadContext::debug_get_stack_level_function(int p_level) const {
 	if (_debug_parse_err_line >= 0) {
 		return String();
 	}
@@ -579,7 +611,7 @@ String CSharpLanguage::debug_get_stack_level_function(int p_level) const {
 	return String();
 }
 
-String CSharpLanguage::debug_get_stack_level_source(int p_level) const {
+String CSharpThreadContext::debug_get_stack_level_source(int p_level) const {
 	if (_debug_parse_err_line >= 0) {
 		return _debug_parse_err_file;
 	}
@@ -588,8 +620,14 @@ String CSharpLanguage::debug_get_stack_level_source(int p_level) const {
 	return String();
 }
 
-Vector<ScriptLanguage::StackInfo> CSharpLanguage::debug_get_current_stack_info() {
+using StackInfo = ScriptLanguageThreadContext::StackInfo;
+
+Vector<StackInfo> CSharpThreadContext::debug_get_current_stack_info() const {
 #ifdef DEBUG_ENABLED
+	if (has_stack_trace_override) {
+		return stack_trace_override;
+	}
+
 	// Printing an error here will result in endless recursion, so we must be careful
 	static thread_local bool _recursion_flag_ = false;
 	if (_recursion_flag_) {
@@ -600,7 +638,7 @@ Vector<ScriptLanguage::StackInfo> CSharpLanguage::debug_get_current_stack_info()
 
 	GD_MONO_SCOPE_THREAD_ATTACH;
 
-	if (!gdmono->is_runtime_initialized() || !GDMono::get_singleton()->get_core_api_assembly() || !GDMonoCache::cached_data.corlib_cache_updated) {
+	if (!parent.gdmono->is_runtime_initialized() || !GDMono::get_singleton()->get_core_api_assembly() || !GDMonoCache::cached_data.corlib_cache_updated) {
 		return Vector<StackInfo>();
 	}
 
@@ -611,17 +649,22 @@ Vector<ScriptLanguage::StackInfo> CSharpLanguage::debug_get_current_stack_info()
 
 	CACHED_METHOD(System_Diagnostics_StackTrace, ctor_bool)->invoke_raw(stack_trace, ctor_args);
 
-	Vector<StackInfo> si;
-	si = stack_trace_get_info(stack_trace);
-
-	return si;
+	return stack_trace_get_info(stack_trace);
 #else
 	return Vector<StackInfo>();
 #endif
 }
 
+ScriptLanguageThreadContext::DebugThreadID CSharpThreadContext::debug_get_thread_id() const {
+	return debug_thread_id;
+}
+
+ScriptLanguageThreadContext::Severity CSharpThreadContext::debug_get_error_severity() const {
+	return _debug_severity;
+}
+
 #ifdef DEBUG_ENABLED
-Vector<ScriptLanguage::StackInfo> CSharpLanguage::stack_trace_get_info(MonoObject *p_stack_trace) {
+Vector<StackInfo> CSharpThreadContext::stack_trace_get_info(MonoObject *p_stack_trace) const {
 	// Printing an error here will result in endless recursion, so we must be careful
 	static thread_local bool _recursion_flag_ = false;
 	if (_recursion_flag_) {
@@ -1264,13 +1307,17 @@ void CSharpLanguage::thread_exit() {
 #endif
 }
 
+using Severity = ScriptLanguageThreadContext;
+
 bool CSharpLanguage::debug_break_parse(const String &p_file, int p_line, const String &p_error) {
 	// Not a parser error in our case, but it's still used for other type of errors
 	if (EngineDebugger::is_active() && Thread::get_caller_id() == Thread::get_main_id()) {
-		_debug_parse_err_line = p_line;
-		_debug_parse_err_file = p_file;
-		_debug_error = p_error;
-		EngineDebugger::get_script_debugger()->debug(this, false, true);
+		CSharpThreadContext &stack = t_current_thread.context();
+		stack._debug_parse_err_line = p_line;
+		stack._debug_parse_err_file = p_file;
+		stack._debug_error = p_error;
+		stack._debug_severity = Severity::SEVERITY_FATAL;
+		EngineDebugger::get_script_debugger()->debug(stack);
 		return true;
 	} else {
 		return false;
@@ -1279,10 +1326,12 @@ bool CSharpLanguage::debug_break_parse(const String &p_file, int p_line, const S
 
 bool CSharpLanguage::debug_break(const String &p_error, bool p_allow_continue) {
 	if (EngineDebugger::is_active() && Thread::get_caller_id() == Thread::get_main_id()) {
-		_debug_parse_err_line = -1;
-		_debug_parse_err_file = "";
-		_debug_error = p_error;
-		EngineDebugger::get_script_debugger()->debug(this, p_allow_continue);
+		CSharpThreadContext &stack = t_current_thread.context();
+		stack._debug_parse_err_line = -1;
+		stack._debug_parse_err_file = "";
+		stack._debug_error = p_error;
+		stack._debug_severity = p_allow_continue ? Severity::SEVERITY_BREAKPOINT : Severity::SEVERITY_FATAL;
+		EngineDebugger::get_script_debugger()->debug(stack);
 		return true;
 	} else {
 		return false;
@@ -1339,11 +1388,6 @@ void CSharpLanguage::_editor_init_callback() {
 	get_singleton()->godotsharp_editor = godotsharp_editor;
 }
 #endif
-
-void CSharpLanguage::set_language_index(int p_idx) {
-	ERR_FAIL_COND(lang_idx != -1);
-	lang_idx = p_idx;
-}
 
 void CSharpLanguage::release_script_gchandle(MonoGCHandleData &p_gchandle) {
 	if (!p_gchandle.is_released()) { // Do not lock unnecessarily

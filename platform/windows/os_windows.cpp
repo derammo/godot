@@ -114,8 +114,7 @@ BOOL WINAPI HandlerRoutine(_In_ DWORD dwCtrlType) {
 
 	switch (dwCtrlType) {
 		case CTRL_C_EVENT:
-			EngineDebugger::get_script_debugger()->set_depth(-1);
-			EngineDebugger::get_script_debugger()->set_lines_left(1);
+			EngineDebugger::get_script_debugger()->debug_request_break();
 			return TRUE;
 		default:
 			return FALSE;
@@ -236,7 +235,7 @@ Error OS_Windows::open_dynamic_library(const String p_path, void *&p_library_han
 	String path = p_path.replace("/", "\\");
 
 	if (!FileAccess::exists(path)) {
-		//this code exists so gdnative can load .dll files from within the executable path
+		// this code exists so gdnative can load .dll files from within the executable path
 		path = get_executable_path().get_base_dir().plus_file(p_path.get_file());
 	}
 
@@ -298,7 +297,7 @@ OS::Date OS_Windows::get_date(bool p_utc) const {
 		GetLocalTime(&systemtime);
 	}
 
-	//Get DST information from Windows, but only if p_utc is false.
+	// Get DST information from Windows, but only if p_utc is false.
 	TIME_ZONE_INFORMATION info;
 	bool daylight = false;
 	if (!p_utc && GetTimeZoneInformation(&info) == TIME_ZONE_ID_DAYLIGHT) {

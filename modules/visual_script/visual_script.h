@@ -104,6 +104,7 @@ public:
 class VisualScriptNodeInstance {
 	friend class VisualScriptInstance;
 	friend class VisualScriptLanguage; // For debugger.
+	friend class VisualScriptThreadContext; // For debugger.
 
 	enum { // Input argument addressing.
 		INPUT_SHIFT = 1 << 24,
@@ -403,6 +404,7 @@ class VisualScriptInstance : public ScriptInstance {
 
 	friend class VisualScriptFunctionState; // For yield.
 	friend class VisualScriptLanguage; // For debugger.
+	friend class VisualScriptThreadContext; // For debugger.
 public:
 	virtual bool set(const StringName &p_name, const Variant &p_value);
 	virtual bool get(const StringName &p_name, Variant &r_ret) const;
@@ -483,23 +485,8 @@ public:
 
 typedef Ref<VisualScriptNode> (*VisualScriptNodeRegisterFunc)(const String &p_type);
 
-class VisualScriptLanguage : public ScriptLanguage {
+class VisualScriptLanguage final : public ScriptLanguage {
 	HashMap<String, VisualScriptNodeRegisterFunc> register_funcs;
-
-	struct CallLevel {
-		Variant *stack = nullptr;
-		Variant **work_mem = nullptr;
-		const StringName *function = nullptr;
-		VisualScriptInstance *instance = nullptr;
-		int *current_id = nullptr;
-	};
-
-	int _debug_parse_err_node = -1;
-	String _debug_parse_err_file = "";
-	String _debug_error;
-	int _debug_call_stack_pos = 0;
-	int _debug_max_call_stack;
-	CallLevel *_call_stack = nullptr;
 
 public:
 	StringName notification = "_notification";
@@ -509,59 +496,20 @@ public:
 
 	static VisualScriptLanguage *singleton;
 
+	// API compatibility with GDScript
+	static VisualScriptLanguage *get_singleton() {
+		return singleton;
+	}
+
+	SafeNumeric<int> max_call_stack;
 	Mutex lock;
-
-	bool debug_break(const String &p_error, bool p_allow_continue = true);
-	bool debug_break_parse(const String &p_file, int p_node, const String &p_error);
-
-	_FORCE_INLINE_ void enter_function(VisualScriptInstance *p_instance, const StringName *p_function, Variant *p_stack, Variant **p_work_mem, int *current_id) {
-		if (Thread::get_main_id() != Thread::get_caller_id()) {
-			return; // No support for other threads than main for now.
-		}
-
-		if (EngineDebugger::get_script_debugger()->get_lines_left() > 0 && EngineDebugger::get_script_debugger()->get_depth() >= 0) {
-			EngineDebugger::get_script_debugger()->set_depth(EngineDebugger::get_script_debugger()->get_depth() + 1);
-		}
-
-		if (_debug_call_stack_pos >= _debug_max_call_stack) {
-			// Stack overflow.
-			_debug_error = vformat("Stack overflow (stack size: %s). Check for infinite recursion in your script.", _debug_max_call_stack);
-			EngineDebugger::get_script_debugger()->debug(this);
-			return;
-		}
-
-		_call_stack[_debug_call_stack_pos].stack = p_stack;
-		_call_stack[_debug_call_stack_pos].instance = p_instance;
-		_call_stack[_debug_call_stack_pos].function = p_function;
-		_call_stack[_debug_call_stack_pos].work_mem = p_work_mem;
-		_call_stack[_debug_call_stack_pos].current_id = current_id;
-		_debug_call_stack_pos++;
-	}
-
-	_FORCE_INLINE_ void exit_function() {
-		if (Thread::get_main_id() != Thread::get_caller_id()) {
-			return; // No support for other threads than main for now.
-		}
-
-		if (EngineDebugger::get_script_debugger()->get_lines_left() > 0 && EngineDebugger::get_script_debugger()->get_depth() >= 0) {
-			EngineDebugger::get_script_debugger()->set_depth(EngineDebugger::get_script_debugger()->get_depth() - 1);
-		}
-
-		if (_debug_call_stack_pos == 0) {
-			_debug_error = "Stack underflow (engine bug), please report.";
-			EngineDebugger::get_script_debugger()->debug(this);
-			return;
-		}
-
-		_debug_call_stack_pos--;
-	}
 
 	//////////////////////////////////////
 
 	virtual String get_name() const override;
 
 	/* LANGUAGE FUNCTIONS */
-	virtual void init() override;
+	virtual void init(int p_language_index) override;
 	virtual String get_type() const override;
 	virtual String get_extension() const override;
 	virtual Error execute_file(const String &p_path) override;
@@ -583,18 +531,6 @@ public:
 	virtual void auto_indent_code(String &p_code, int p_from_line, int p_to_line) const override;
 	virtual void add_global_constant(const StringName &p_variable, const Variant &p_value) override;
 
-	/* DEBUGGER FUNCTIONS */
-
-	virtual String debug_get_error() const override;
-	virtual int debug_get_stack_level_count() const override;
-	virtual int debug_get_stack_level_line(int p_level) const override;
-	virtual String debug_get_stack_level_function(int p_level) const override;
-	virtual String debug_get_stack_level_source(int p_level) const override;
-	virtual void debug_get_stack_level_locals(int p_level, List<String> *p_locals, List<Variant> *p_values, int p_max_subitems = -1, int p_max_depth = -1) override;
-	virtual void debug_get_stack_level_members(int p_level, List<String> *p_members, List<Variant> *p_values, int p_max_subitems = -1, int p_max_depth = -1) override;
-	virtual void debug_get_globals(List<String> *p_locals, List<Variant> *p_values, int p_max_subitems = -1, int p_max_depth = -1) override;
-	virtual String debug_parse_stack_level_expression(int p_level, const String &p_expression, int p_max_subitems = -1, int p_max_depth = -1) override;
-
 	virtual void reload_all_scripts() override;
 	virtual void reload_tool_script(const Ref<Script> &p_script, bool p_soft_reload) override;
 	/* LOADER FUNCTIONS */
@@ -603,6 +539,12 @@ public:
 	virtual void get_public_functions(List<MethodInfo> *p_functions) const override;
 	virtual void get_public_constants(List<Pair<String, Variant>> *p_constants) const override;
 	virtual void get_public_annotations(List<MethodInfo> *p_annotations) const override;
+
+	/* DEBUG FUNCTIONS */
+	bool debug_break(const String &p_error, ScriptLanguageThreadContext::Severity p_severity); // XXX move to context
+	bool debug_break_parse(const String &p_file, int p_node, const String &p_error); // XXX move to context
+	void debug_get_globals(List<String> *p_locals, List<Variant> *p_values, int p_max_subitems = -1, int p_max_depth = -1) const override;
+	ScriptLanguageThreadContext &current_thread() override;
 
 	virtual void profiling_start() override;
 	virtual void profiling_stop() override;
@@ -615,8 +557,104 @@ public:
 	Ref<VisualScriptNode> create_node_from_name(const String &p_name);
 	void get_registered_node_names(List<String> *r_names);
 
+	/* THREAD CONTEXT FACTORY */
+	static VisualScriptThreadContext *create_thread_context();
+
 	VisualScriptLanguage();
 	~VisualScriptLanguage();
+};
+
+class VisualScriptThreadContext : public ScriptLanguageThreadContext {
+	friend class VisualScriptLanguage;
+
+	struct CallLevel {
+		Variant *stack = nullptr;
+		Variant **work_mem = nullptr;
+		const StringName *function = nullptr;
+		VisualScriptInstance *instance = nullptr;
+		int *current_id = nullptr;
+	};
+
+	VisualScriptLanguage &_parent;
+	DebugThreadID _debug_thread_id;
+	bool _is_main;
+	int _debug_parse_err_node = -1;
+	String _debug_parse_err_file = "";
+	String _debug_error;
+	int _debug_call_stack_pos = 0;
+	int _debug_max_call_stack;
+	CallLevel *_call_stack = nullptr;
+
+	// Number of "next / step over" steps to execute before pausing, or -1 for unrestricted run.
+	int _step_overs_left = -1;
+
+	// Number of stack frames to pop out of before pausing, or -1 for unrestricted run.
+	int _frames_left = -1;
+
+public:
+	ScriptLanguage *get_language() const override {
+		return &_parent;
+	}
+
+	DebugThreadID debug_get_thread_id() const override;
+	String debug_get_error() const override;
+	Severity _debug_error_severity = SEVERITY_NONE;
+	Severity debug_get_error_severity() const override;
+	int debug_get_stack_level_count() const override;
+	int debug_get_stack_level_line(int p_level) const override;
+	String debug_get_stack_level_function(int p_level) const override;
+	String debug_get_stack_level_source(int p_level) const override;
+	void debug_get_stack_level_locals(int p_level, List<String> *p_locals, List<Variant> *p_values, int p_max_subitems = -1, int p_max_depth = -1) const override;
+	void debug_get_stack_level_members(int p_level, List<String> *p_members, List<Variant> *p_values, int p_max_subitems = -1, int p_max_depth = -1) const override;
+	String debug_parse_stack_level_expression(int p_level, const String &p_expression, int p_max_subitems = -1, int p_max_depth = -1) const override;
+
+	_FORCE_INLINE_ void enter_function(VisualScriptInstance *p_instance, const StringName *p_function, Variant *p_stack, Variant **p_work_mem, int *current_id) {
+		if (_step_overs_left > 0 && _frames_left >= 0) {
+			// Need to exit from this frame before steps count again.
+			++_frames_left;
+		}
+
+		if (_debug_call_stack_pos >= _debug_max_call_stack) {
+			// Stack overflow.
+			_debug_error = vformat("Stack overflow (stack size: %s). Check for infinite recursion in your script.", _debug_max_call_stack);
+			EngineDebugger::get_script_debugger()->debug(*this);
+			return;
+		}
+
+		_call_stack[_debug_call_stack_pos].stack = p_stack;
+		_call_stack[_debug_call_stack_pos].instance = p_instance;
+		_call_stack[_debug_call_stack_pos].function = p_function;
+		_call_stack[_debug_call_stack_pos].work_mem = p_work_mem;
+		_call_stack[_debug_call_stack_pos].current_id = current_id;
+		_debug_call_stack_pos++;
+	}
+
+	_FORCE_INLINE_ void exit_function() {
+		if (_step_overs_left > 0 && _frames_left >= 0) {
+			// Pop out until we start consuming steps again.
+			--_frames_left;
+		}
+
+		if (_debug_call_stack_pos == 0) {
+			_debug_error = "Stack underflow (engine bug), please report.";
+			EngineDebugger::get_script_debugger()->debug(*this);
+			return;
+		}
+
+		_debug_call_stack_pos--;
+	}
+
+	bool is_main_thread() const override;
+
+	~VisualScriptThreadContext();
+
+	VisualScriptThreadContext(const VisualScriptThreadContext &) = delete;
+	VisualScriptThreadContext(const VisualScriptThreadContext &&) = delete;
+	VisualScriptThreadContext &operator=(const VisualScriptThreadContext &) = delete;
+	VisualScriptThreadContext &operator=(const VisualScriptThreadContext &&) = delete;
+
+private:
+	VisualScriptThreadContext(VisualScriptLanguage &p_parent, Thread::ID p_thread_id);
 };
 
 // Aid for registering.

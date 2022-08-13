@@ -383,6 +383,7 @@ void debug_print_unhandled_exception(MonoException *p_exc) {
 }
 
 void debug_send_unhandled_exception_error(MonoException *p_exc) {
+	using StackInfo = ScriptLanguageThreadContext::StackInfo;
 #ifdef DEBUG_ENABLED
 	if (!EngineDebugger::is_active()) {
 #ifdef TOOLS_ENABLED
@@ -400,12 +401,12 @@ void debug_send_unhandled_exception_error(MonoException *p_exc) {
 	_recursion_flag_ = true;
 	SCOPE_EXIT { _recursion_flag_ = false; };
 
-	ScriptLanguage::StackInfo separator;
+	StackInfo separator;
 	separator.file = String();
 	separator.func = "--- " + RTR("End of inner exception stack trace") + " ---";
 	separator.line = 0;
 
-	Vector<ScriptLanguage::StackInfo> si;
+	Vector<StackInfo> si;
 	String exc_msg;
 
 	while (p_exc != nullptr) {
@@ -423,9 +424,9 @@ void debug_send_unhandled_exception_error(MonoException *p_exc) {
 			return;
 		}
 
-		Vector<ScriptLanguage::StackInfo> _si;
+		Vector<StackInfo> _si;
 		if (stack_trace != nullptr) {
-			_si = CSharpLanguage::get_singleton()->stack_trace_get_info(stack_trace);
+			_si = CSharpLanguage::current_thread_implementation().stack_trace_get_info(stack_trace);
 			for (int i = _si.size() - 1; i >= 0; i--) {
 				si.insert(0, _si[i]);
 			}
@@ -450,7 +451,9 @@ void debug_send_unhandled_exception_error(MonoException *p_exc) {
 	int line = si.size() ? si[0].line : __LINE__;
 	String error_msg = "Unhandled exception";
 
-	EngineDebugger::get_script_debugger()->send_error(func, file, line, error_msg, exc_msg, true, ERR_HANDLER_ERROR, si);
+	CSharpLanguage::current_thread_implementation().debug_set_stack_trace_override(si);
+	EngineDebugger::get_singleton()->send_error(func, file, line, error_msg, exc_msg, true, ERR_HANDLER_ERROR);
+	CSharpLanguage::current_thread_implementation().debug_clear_stack_trace_override();
 #endif
 }
 

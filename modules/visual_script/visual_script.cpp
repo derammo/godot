@@ -32,9 +32,23 @@
 
 #include "core/config/project_settings.h"
 #include "core/core_string_names.h"
+#include "core/object/script_language_internals.h"
 #include "core/os/os.h"
 #include "scene/main/node.h"
 #include "visual_script_nodes.h"
+
+// This gets initialized for each thread.  If debugging is enabled, it will be
+// accessed and will lazy create a thread local storage context for that thread.
+thread_local ThreadContextRef<VisualScriptLanguage, VisualScriptThreadContext> t_current_thread;
+
+// virtual
+ScriptLanguageThreadContext &VisualScriptLanguage::current_thread() {
+	return t_current_thread.context();
+}
+
+VisualScriptThreadContext *VisualScriptLanguage::create_thread_context() {
+	return memnew(VisualScriptThreadContext(*get_singleton(), Thread::get_caller_id()));
+}
 
 // Used by editor, this is not really saved.
 void VisualScriptNode::set_breakpoint(bool p_breakpoint) {
@@ -71,7 +85,7 @@ void VisualScriptNode::_set_default_input_values(Array p_values) {
 }
 
 void VisualScriptNode::validate_input_default_values() {
-	default_input_values.resize(MAX(default_input_values.size(), get_input_value_port_count())); //let it grow as big as possible, we don't want to lose values on resize
+	default_input_values.resize(MAX(default_input_values.size(), get_input_value_port_count())); // let it grow as big as possible, we don't want to lose values on resize
 
 	// Actually validate on save.
 	for (int i = 0; i < get_input_value_port_count(); i++) {
@@ -86,7 +100,7 @@ void VisualScriptNode::validate_input_default_values() {
 			const Variant *existingp = &existing;
 			Variant::construct(expected, default_input_values[i], &existingp, 1, ce);
 			if (ce.error != Callable::CallError::CALL_OK) {
-				//could not convert? force..
+				// could not convert? force..
 				Variant::construct(expected, default_input_values[i], nullptr, 0, ce);
 			}
 		}
@@ -1338,7 +1352,7 @@ Variant VisualScriptInstance::_call_internal(const StringName &p_method, void *p
 
 #ifdef DEBUG_ENABLED
 	if (EngineDebugger::is_active()) {
-		VisualScriptLanguage::singleton->enter_function(this, &p_method, variant_stack, &working_mem, &current_node_id);
+		t_current_thread.context().enter_function(this, &p_method, variant_stack, &working_mem, &current_node_id);
 	}
 #endif
 
@@ -1353,6 +1367,13 @@ Variant VisualScriptInstance::_call_internal(const StringName &p_method, void *p
 		working_mem = node->working_mem_idx >= 0 ? &variant_stack[node->working_mem_idx] : (Variant *)nullptr;
 
 		VSDEBUG("WORKING MEM: " + itos(node->working_mem_idx));
+
+#ifdef DEBUG_ENABLED
+		if (EngineDebugger::is_active()) {
+			// Potentially block due to debugging.
+			EngineDebugger::get_script_debugger()->step(t_current_thread.context());
+		}
+#endif
 
 		if (current_node_id == f->node) {
 			// If function node, set up function arguments from beginning of stack.
@@ -1469,7 +1490,7 @@ Variant VisualScriptInstance::_call_internal(const StringName &p_method, void *p
 #ifdef DEBUG_ENABLED
 				// Will re-enter later, so exiting.
 				if (EngineDebugger::is_active()) {
-					VisualScriptLanguage::singleton->exit_function();
+					t_current_thread.context().exit_function();
 				}
 #endif
 
@@ -1479,24 +1500,14 @@ Variant VisualScriptInstance::_call_internal(const StringName &p_method, void *p
 
 #ifdef DEBUG_ENABLED
 		if (EngineDebugger::is_active()) {
-			// line
-			bool do_break = false;
-
-			if (EngineDebugger::get_script_debugger()->get_lines_left() > 0) {
-				if (EngineDebugger::get_script_debugger()->get_depth() <= 0) {
-					EngineDebugger::get_script_debugger()->set_lines_left(EngineDebugger::get_script_debugger()->get_lines_left() - 1);
-				}
-				if (EngineDebugger::get_script_debugger()->get_lines_left() <= 0) {
-					do_break = true;
-				}
-			}
+			bool do_break = t_current_thread.context().debug_handle_step();
 
 			if (EngineDebugger::get_script_debugger()->is_breakpoint(current_node_id, source)) {
 				do_break = true;
 			}
 
 			if (do_break) {
-				VisualScriptLanguage::singleton->debug_break("Breakpoint", true);
+				VisualScriptLanguage::singleton->debug_break("Breakpoint", ScriptLanguageThreadContext::SEVERITY_BREAKPOINT);
 			}
 
 			EngineDebugger::get_singleton()->line_poll();
@@ -1660,21 +1671,21 @@ Variant VisualScriptInstance::_call_internal(const StringName &p_method, void *p
 			}
 		}
 
-		//if (!GDScriptLanguage::get_singleton()->debug_break(err_text,false)) {
-		// debugger break did not happen
+		// if (!GDScriptLanguage::get_singleton()->debug_break(err_text,false)) {
+		//  debugger break did not happen
 
-		if (!VisualScriptLanguage::singleton->debug_break(error_str, false)) {
+		if (!VisualScriptLanguage::singleton->debug_break(error_str, ScriptLanguageThreadContext::SEVERITY_FATAL)) {
 			_err_print_error(err_func.utf8().get_data(), err_file.utf8().get_data(), err_line, error_str.utf8().get_data(), false, ERR_HANDLER_SCRIPT);
 		}
 
 		//}
 	} else {
-		//return_value=
+		// return_value=
 	}
 
 #ifdef DEBUG_ENABLED
 	if (EngineDebugger::is_active()) {
-		VisualScriptLanguage::singleton->exit_function();
+		t_current_thread.context().exit_function();
 	}
 #endif
 
@@ -1687,7 +1698,7 @@ Variant VisualScriptInstance::_call_internal(const StringName &p_method, void *p
 }
 
 Variant VisualScriptInstance::callp(const StringName &p_method, const Variant **p_args, int p_argcount, Callable::CallError &r_error) {
-	r_error.error = Callable::CallError::CALL_OK; //ok by default
+	r_error.error = Callable::CallError::CALL_OK; // ok by default
 
 	HashMap<StringName, Function>::Iterator F = functions.find(p_method);
 	if (!F) {
@@ -1701,10 +1712,10 @@ Variant VisualScriptInstance::callp(const StringName &p_method, const Variant **
 
 	int total_stack_size = 0;
 
-	total_stack_size += f->max_stack * sizeof(Variant); //variants
+	total_stack_size += f->max_stack * sizeof(Variant); // variants
 	total_stack_size += f->node_count * sizeof(bool);
-	total_stack_size += (max_input_args + max_output_args) * sizeof(Variant *); //arguments
-	total_stack_size += f->flow_stack_size * sizeof(int); //flow
+	total_stack_size += (max_input_args + max_output_args) * sizeof(Variant *); // arguments
+	total_stack_size += f->flow_stack_size * sizeof(int); // flow
 	total_stack_size += f->pass_stack_size * sizeof(int);
 
 	VSDEBUG("STACK SIZE: " + itos(total_stack_size));
@@ -1905,8 +1916,8 @@ void VisualScriptInstance::create(const Ref<VisualScript> &p_script, Object *p_o
 				}
 			}
 
-			//Multiple passes are required to set up this complex thing..
-			//First create the nodes.
+			// Multiple passes are required to set up this complex thing..
+			// First create the nodes.
 			for (const int &F : node_ids) {
 				Ref<VisualScriptNode> node = script->nodes[F].node;
 
@@ -1969,7 +1980,7 @@ void VisualScriptInstance::create(const Ref<VisualScript> &p_script, Object *p_o
 					instance->working_mem_idx = function.max_stack;
 					function.max_stack += instance->get_working_memory_size();
 				} else {
-					instance->working_mem_idx = -1; //no working mem
+					instance->working_mem_idx = -1; // no working mem
 				}
 
 				max_input_args = MAX(max_input_args, instance->input_port_count);
@@ -2019,9 +2030,9 @@ void VisualScriptInstance::create(const Ref<VisualScript> &p_script, Object *p_o
 				from->sequence_outputs[sc.from_output] = to;
 			}
 
-			//fourth pass:
-			// 1) unassigned input ports to default values
-			// 2) connect unassigned output ports to trash
+			// fourth pass:
+			//  1) unassigned input ports to default values
+			//  2) connect unassigned output ports to trash
 			for (const int &F : node_ids) {
 				ERR_CONTINUE(!instances.has(F));
 
@@ -2040,7 +2051,7 @@ void VisualScriptInstance::create(const Ref<VisualScript> &p_script, Object *p_o
 				// Connect to trash.
 				for (int i = 0; i < instance->output_port_count; i++) {
 					if (instance->output_ports[i] == -1) {
-						instance->output_ports[i] = function.trash_pos; //trash is same for all
+						instance->output_ports[i] = function.trash_pos; // trash is same for all
 					}
 				}
 			}
@@ -2092,14 +2103,14 @@ Variant VisualScriptFunctionState::_signal_callback(const Variant **p_args, int 
 		r_error.argument = 1;
 		return Variant();
 	} else if (p_argcount == 1) {
-		//noooneee, reserved for me, me and only me.
+		// noooneee, reserved for me, me and only me.
 	} else {
 		for (int i = 0; i < p_argcount - 1; i++) {
 			args.push_back(*p_args[i]);
 		}
 	}
 
-	Ref<VisualScriptFunctionState> self = *p_args[p_argcount - 1]; //hi, I'm myself, needed this to remain alive.
+	Ref<VisualScriptFunctionState> self = *p_args[p_argcount - 1]; // hi, I'm myself, needed this to remain alive.
 
 	if (self.is_null()) {
 		r_error.error = Callable::CallError::CALL_ERROR_INVALID_ARGUMENT;
@@ -2115,7 +2126,7 @@ Variant VisualScriptFunctionState::_signal_callback(const Variant **p_args, int 
 	*working_mem = args; // Arguments go to working mem.
 
 	Variant ret = instance->_call_internal(function, stack.ptrw(), stack.size(), node, flow_stack_pos, pass, true, r_error);
-	function = StringName(); //invalidate
+	function = StringName(); // invalidate
 	return ret;
 }
 
@@ -2157,7 +2168,7 @@ Variant VisualScriptFunctionState::resume(Array p_args) {
 	*working_mem = p_args; // Arguments go to working mem.
 
 	Variant ret = instance->_call_internal(function, stack.ptrw(), stack.size(), node, flow_stack_pos, pass, true, r_error);
-	function = StringName(); //invalidate
+	function = StringName(); // invalidate
 	return ret;
 }
 
@@ -2187,7 +2198,8 @@ String VisualScriptLanguage::get_name() const {
 }
 
 /* LANGUAGE FUNCTIONS */
-void VisualScriptLanguage::init() {
+void VisualScriptLanguage::init(int p_language_index) {
+	ScriptLanguage::init(p_language_index);
 }
 
 String VisualScriptLanguage::get_type() const {
@@ -2266,33 +2278,45 @@ bool VisualScriptLanguage::debug_break_parse(const String &p_file, int p_node, c
 	// Break because of parse error.
 
 	if (EngineDebugger::is_active() && Thread::get_caller_id() == Thread::get_main_id()) {
-		_debug_parse_err_node = p_node;
-		_debug_parse_err_file = p_file;
-		_debug_error = p_error;
-		EngineDebugger::get_script_debugger()->debug(this, false, true);
+		VisualScriptThreadContext &stack = t_current_thread.context();
+		stack._debug_parse_err_node = p_node;
+		stack._debug_parse_err_file = p_file;
+		stack._debug_error = p_error;
+		stack._debug_error_severity = ScriptLanguageThreadContext::SEVERITY_FATAL;
+		EngineDebugger::get_script_debugger()->debug(stack);
 		return true;
 	} else {
 		return false;
 	}
 }
 
-bool VisualScriptLanguage::debug_break(const String &p_error, bool p_allow_continue) {
+bool VisualScriptLanguage::debug_break(const String &p_error, ScriptLanguageThreadContext::Severity p_severity) {
 	if (EngineDebugger::is_active() && Thread::get_caller_id() == Thread::get_main_id()) {
-		_debug_parse_err_node = -1;
-		_debug_parse_err_file = "";
-		_debug_error = p_error;
-		EngineDebugger::get_script_debugger()->debug(this, p_allow_continue, true);
+		VisualScriptThreadContext &stack = t_current_thread.context();
+		stack._debug_parse_err_node = -1;
+		stack._debug_parse_err_file = "";
+		stack._debug_error = p_error;
+		stack._debug_error_severity = p_severity;
+		EngineDebugger::get_script_debugger()->debug(stack);
 		return true;
 	} else {
 		return false;
 	}
 }
 
-String VisualScriptLanguage::debug_get_error() const {
+ScriptLanguageThreadContext::DebugThreadID VisualScriptThreadContext::debug_get_thread_id() const {
+	return _debug_thread_id;
+}
+
+String VisualScriptThreadContext::debug_get_error() const {
 	return _debug_error;
 }
 
-int VisualScriptLanguage::debug_get_stack_level_count() const {
+ScriptLanguageThreadContext::Severity VisualScriptThreadContext::debug_get_error_severity() const {
+	return _debug_error_severity;
+}
+
+int VisualScriptThreadContext::debug_get_stack_level_count() const {
 	if (_debug_parse_err_node >= 0) {
 		return 1;
 	}
@@ -2300,7 +2324,7 @@ int VisualScriptLanguage::debug_get_stack_level_count() const {
 	return _debug_call_stack_pos;
 }
 
-int VisualScriptLanguage::debug_get_stack_level_line(int p_level) const {
+int VisualScriptThreadContext::debug_get_stack_level_line(int p_level) const {
 	if (_debug_parse_err_node >= 0) {
 		return _debug_parse_err_node;
 	}
@@ -2312,7 +2336,7 @@ int VisualScriptLanguage::debug_get_stack_level_line(int p_level) const {
 	return *(_call_stack[l].current_id);
 }
 
-String VisualScriptLanguage::debug_get_stack_level_function(int p_level) const {
+String VisualScriptThreadContext::debug_get_stack_level_function(int p_level) const {
 	if (_debug_parse_err_node >= 0) {
 		return "";
 	}
@@ -2322,7 +2346,7 @@ String VisualScriptLanguage::debug_get_stack_level_function(int p_level) const {
 	return *_call_stack[l].function;
 }
 
-String VisualScriptLanguage::debug_get_stack_level_source(int p_level) const {
+String VisualScriptThreadContext::debug_get_stack_level_source(int p_level) const {
 	if (_debug_parse_err_node >= 0) {
 		return _debug_parse_err_file;
 	}
@@ -2332,7 +2356,7 @@ String VisualScriptLanguage::debug_get_stack_level_source(int p_level) const {
 	return _call_stack[l].instance->get_script_ptr()->get_path();
 }
 
-void VisualScriptLanguage::debug_get_stack_level_locals(int p_level, List<String> *p_locals, List<Variant> *p_values, int p_max_subitems, int p_max_depth) {
+void VisualScriptThreadContext::debug_get_stack_level_locals(int p_level, List<String> *p_locals, List<Variant> *p_values, int p_max_subitems, int p_max_depth) const {
 	if (_debug_parse_err_node >= 0) {
 		return;
 	}
@@ -2358,7 +2382,7 @@ void VisualScriptLanguage::debug_get_stack_level_locals(int p_level, List<String
 
 		p_locals->push_back("input/" + name);
 
-		//value is trickier
+		// value is trickier
 
 		int in_from = node->input_ports[i];
 		int in_value = in_from & VisualScriptNodeInstance::INPUT_MASK;
@@ -2378,7 +2402,7 @@ void VisualScriptLanguage::debug_get_stack_level_locals(int p_level, List<String
 
 		p_locals->push_back("output/" + name);
 
-		//value is trickier
+		// value is trickier
 
 		int in_from = node->output_ports[i];
 		p_values->push_back(_call_stack[l].stack[in_from]);
@@ -2390,7 +2414,7 @@ void VisualScriptLanguage::debug_get_stack_level_locals(int p_level, List<String
 	}
 }
 
-void VisualScriptLanguage::debug_get_stack_level_members(int p_level, List<String> *p_members, List<Variant> *p_values, int p_max_subitems, int p_max_depth) {
+void VisualScriptThreadContext::debug_get_stack_level_members(int p_level, List<String> *p_members, List<Variant> *p_values, int p_max_subitems, int p_max_depth) const {
 	if (_debug_parse_err_node >= 0) {
 		return;
 	}
@@ -2414,11 +2438,11 @@ void VisualScriptLanguage::debug_get_stack_level_members(int p_level, List<Strin
 	}
 }
 
-void VisualScriptLanguage::debug_get_globals(List<String> *p_locals, List<Variant> *p_values, int p_max_subitems, int p_max_depth) {
+void VisualScriptLanguage::debug_get_globals(List<String> *p_locals, List<Variant> *p_values, int p_max_subitems, int p_max_depth) const {
 	// No globals are really reachable in gdscript.
 }
 
-String VisualScriptLanguage::debug_parse_stack_level_expression(int p_level, const String &p_expression, int p_max_subitems, int p_max_depth) {
+String VisualScriptThreadContext::debug_parse_stack_level_expression(int p_level, const String &p_expression, int p_max_subitems, int p_max_depth) const {
 	return "";
 }
 
@@ -2481,26 +2505,38 @@ void VisualScriptLanguage::get_registered_node_names(List<String> *r_names) {
 	}
 }
 
-VisualScriptLanguage::VisualScriptLanguage() {
-	singleton = this;
-
-	int dmcs = GLOBAL_DEF("debug/settings/visual_script/max_call_stack", 1024);
-	ProjectSettings::get_singleton()->set_custom_property_info("debug/settings/visual_script/max_call_stack", PropertyInfo(Variant::INT, "debug/settings/visual_script/max_call_stack", PROPERTY_HINT_RANGE, "1024,4096,1,or_greater")); //minimum is 1024
+VisualScriptThreadContext::VisualScriptThreadContext(VisualScriptLanguage &p_parent, Thread::ID p_thread_id) :
+		_parent(p_parent) {
+	_debug_thread_id = ScriptLanguageInternals::create_thread_id(p_parent, p_thread_id);
+	_is_main = p_thread_id == Thread::get_main_id();
+	_debug_parse_err_file = "";
+	_debug_call_stack_pos = 0;
 
 	if (EngineDebugger::is_active()) {
-		// Debugging enabled!
-		_debug_max_call_stack = dmcs;
+		_debug_max_call_stack = _parent.max_call_stack.get();
 		_call_stack = memnew_arr(CallLevel, _debug_max_call_stack + 1);
-
 	} else {
 		_debug_max_call_stack = 0;
 		_call_stack = nullptr;
 	}
 }
 
-VisualScriptLanguage::~VisualScriptLanguage() {
+bool VisualScriptThreadContext::is_main_thread() const {
+	return _is_main;
+}
+
+VisualScriptThreadContext::~VisualScriptThreadContext() {
 	if (_call_stack) {
 		memdelete_arr(_call_stack);
 	}
+}
+
+VisualScriptLanguage::VisualScriptLanguage() {
+	singleton = this;
+	max_call_stack.set(GLOBAL_DEF("debug/settings/visual_script/max_call_stack", 1024));
+	ProjectSettings::get_singleton()->set_custom_property_info("debug/settings/visual_script/max_call_stack", PropertyInfo(Variant::INT, "debug/settings/visual_script/max_call_stack", PROPERTY_HINT_RANGE, "1024,4096,1,or_greater")); // minimum is 1024
+}
+
+VisualScriptLanguage::~VisualScriptLanguage() {
 	singleton = nullptr;
 }

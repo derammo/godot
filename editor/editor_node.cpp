@@ -74,6 +74,7 @@
 #include "editor/audio_stream_preview.h"
 #include "editor/debugger/debug_adapter/debug_adapter_server.h"
 #include "editor/debugger/editor_debugger_node.h"
+#include "editor/debugger/script_debugger_object.h"
 #include "editor/dependency_editor.h"
 #include "editor/editor_about.h"
 #include "editor/editor_audio_buses.h"
@@ -4003,6 +4004,7 @@ void EditorNode::register_editor_types() {
 	GDREGISTER_CLASS(EditorScenePostImport);
 	GDREGISTER_CLASS(EditorCommandPalette);
 	GDREGISTER_CLASS(EditorDebuggerPlugin);
+	GDREGISTER_CLASS(ScriptDebuggerObject);
 }
 
 void EditorNode::unregister_editor_types() {
