@@ -120,6 +120,9 @@ String get_exception_name_and_message(MonoException *p_exc);
 
 void debug_print_unhandled_exception(MonoException *p_exc);
 void debug_send_unhandled_exception_error(MonoException *p_exc);
+void debug_break_for_unhandled_exception(MonoException *p_exc);
+
+// Handle according to policy; calls one of the above.
 void debug_unhandled_exception(MonoException *p_exc);
 void print_unhandled_exception(MonoException *p_exc);
 
@@ -139,6 +142,14 @@ _FORCE_INLINE_ int get_runtime_invoke_count() {
 _FORCE_INLINE_ int &get_runtime_invoke_count_ref() {
 	return current_invoke_count;
 }
+
+#ifdef DEBUG_ENABLED
+void begin_runtime_hook();
+void end_runtime_hook();
+#else
+_FORCE_INLINE_ void begin_runtime_hook() {}
+_FORCE_INLINE_ void end_runtime_hook() {}
+#endif
 
 MonoObject *runtime_invoke(MonoMethod *p_method, void *p_obj, void **p_params, MonoException **r_exc);
 
@@ -183,10 +194,12 @@ void add_internal_call(const char *p_name, R (*p_func)(P...)) {
 #define GD_MONO_BEGIN_RUNTIME_INVOKE                                              \
 	int &_runtime_invoke_count_ref = GDMonoUtils::get_runtime_invoke_count_ref(); \
 	_runtime_invoke_count_ref += 1;                                               \
+	GDMonoUtils::begin_runtime_hook();                                            \
 	((void)0)
 
-#define GD_MONO_END_RUNTIME_INVOKE  \
-	_runtime_invoke_count_ref -= 1; \
+#define GD_MONO_END_RUNTIME_INVOKE   \
+	_runtime_invoke_count_ref -= 1;  \
+	GDMonoUtils::end_runtime_hook(); \
 	((void)0)
 
 #define GD_MONO_SCOPE_THREAD_ATTACH                                   \

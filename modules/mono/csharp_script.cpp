@@ -585,74 +585,25 @@ String CSharpThreadContext::debug_get_error() const {
 }
 
 int CSharpThreadContext::debug_get_stack_level_count() const {
-	if (_debug_parse_err_line >= 0) {
-		return 1;
-	}
-
-	// TODO: StackTrace
-	return 1;
+	return _get_current_stack_info().size();
 }
 
 int CSharpThreadContext::debug_get_stack_level_line(int p_level) const {
-	if (_debug_parse_err_line >= 0) {
-		return _debug_parse_err_line;
-	}
-
-	// TODO: StackTrace
-	return 1;
+	return _get_current_stack_info()[p_level].line;
 }
 
 String CSharpThreadContext::debug_get_stack_level_function(int p_level) const {
-	if (_debug_parse_err_line >= 0) {
-		return String();
-	}
-
-	// TODO: StackTrace
-	return String();
+	return _get_current_stack_info()[p_level].func;
 }
 
 String CSharpThreadContext::debug_get_stack_level_source(int p_level) const {
-	if (_debug_parse_err_line >= 0) {
-		return _debug_parse_err_file;
-	}
-
-	// TODO: StackTrace
-	return String();
+	return _get_current_stack_info()[p_level].file;
 }
 
 using StackInfo = ScriptLanguageThreadContext::StackInfo;
 
 Vector<StackInfo> CSharpThreadContext::debug_get_current_stack_info() const {
-#ifdef DEBUG_ENABLED
-	if (has_stack_trace_override) {
-		return stack_trace_override;
-	}
-
-	// Printing an error here will result in endless recursion, so we must be careful
-	static thread_local bool _recursion_flag_ = false;
-	if (_recursion_flag_) {
-		return Vector<StackInfo>();
-	}
-	_recursion_flag_ = true;
-	SCOPE_EXIT { _recursion_flag_ = false; };
-
-	GD_MONO_SCOPE_THREAD_ATTACH;
-
-	if (!parent.gdmono->is_runtime_initialized() || !GDMono::get_singleton()->get_core_api_assembly() || !GDMonoCache::cached_data.corlib_cache_updated) {
-		return Vector<StackInfo>();
-	}
-
-	MonoObject *stack_trace = mono_object_new(mono_domain_get(), CACHED_CLASS(System_Diagnostics_StackTrace)->get_mono_ptr());
-
-	MonoBoolean need_file_info = true;
-	void *ctor_args[1] = { &need_file_info };
-
-	CACHED_METHOD(System_Diagnostics_StackTrace, ctor_bool)->invoke_raw(stack_trace, ctor_args);
-
-	return stack_trace_get_info(stack_trace);
-#else
-	return Vector<StackInfo>();
-#endif
+	return _get_current_stack_info();
 }
 
 ScriptLanguageThreadContext::DebugThreadID CSharpThreadContext::debug_get_thread_id() const {
@@ -663,7 +614,58 @@ ScriptLanguageThreadContext::Severity CSharpThreadContext::debug_get_error_sever
 	return _debug_severity;
 }
 
+const Vector<StackInfo> &CSharpThreadContext::_get_current_stack_info() const {
 #ifdef DEBUG_ENABLED
+	// Printing an error here will result in endless recursion, so we must be careful
+	static thread_local bool _recursion_flag_ = false;
+	if (_recursion_flag_) {
+		stack_trace_cache.clear();
+		return stack_trace_cache;
+	}
+	_recursion_flag_ = true;
+	SCOPE_EXIT { _recursion_flag_ = false; };
+
+	GD_MONO_SCOPE_THREAD_ATTACH;
+
+	if (has_stack_trace_override) {
+		return stack_trace_override;
+	}
+
+	if (stack_trace_cached) {
+		return stack_trace_cache;
+	}
+
+	if (!parent.gdmono->is_runtime_initialized() ||
+			!GDMono::get_singleton()->get_core_api_assembly() ||
+			!GDMonoCache::cached_data.corlib_cache_updated) {
+		stack_trace_cache.clear();
+		return stack_trace_cache;
+	}
+
+	if (tid != Thread::get_caller_id()) {
+		// TODO we need to use the soft debugger API and implement real debugging or we can just store the stack every time we go into a call or return?
+		stack_trace_cache.clear();
+		return stack_trace_cache;
+	}
+
+	MonoObject *stack_trace = mono_object_new(mono_domain_get(), CACHED_CLASS(System_Diagnostics_StackTrace)->get_mono_ptr());
+
+	MonoBoolean need_file_info = true;
+	void *ctor_args[1] = { &need_file_info };
+
+	CACHED_METHOD(System_Diagnostics_StackTrace, ctor_bool)->invoke_raw(stack_trace, ctor_args);
+
+	stack_trace_cache = stack_trace_get_info(stack_trace);
+	// XXX we will clear this flag when we actually implement resuming from breakpoint
+	stack_trace_cached = true;
+	return stack_trace_cache;
+#else
+	return stack_trace_cache;
+#endif
+}
+
+#ifdef DEBUG_ENABLED
+
 Vector<StackInfo> CSharpThreadContext::stack_trace_get_info(MonoObject *p_stack_trace) const {
 	// Printing an error here will result in endless recursion, so we must be careful
 	static thread_local bool _recursion_flag_ = false;
@@ -718,6 +720,7 @@ Vector<StackInfo> CSharpThreadContext::stack_trace_get_info(MonoObject *p_stack_
 
 	return si;
 }
+
 #endif
 
 void CSharpLanguage::post_unsafe_reference(Object *p_obj) {
@@ -1309,34 +1312,49 @@ void CSharpLanguage::thread_exit() {
 
 using Severity = ScriptLanguageThreadContext;
 
-bool CSharpLanguage::debug_break_parse(const String &p_file, int p_line, const String &p_error) {
+#ifdef DEBUG_ENABLED
+bool CSharpThreadContext::debug_break_parse(const String &p_file, int p_line, const String &p_error) {
 	// Not a parser error in our case, but it's still used for other type of errors
 	if (EngineDebugger::is_active() && Thread::get_caller_id() == Thread::get_main_id()) {
-		CSharpThreadContext &stack = t_current_thread.context();
-		stack._debug_parse_err_line = p_line;
-		stack._debug_parse_err_file = p_file;
-		stack._debug_error = p_error;
-		stack._debug_severity = Severity::SEVERITY_FATAL;
-		EngineDebugger::get_script_debugger()->debug(stack);
+		_debug_parse_err_line = p_line;
+		_debug_parse_err_file = p_file;
+		_debug_error = p_error;
+		_debug_severity = Severity::SEVERITY_FATAL;
+		EngineDebugger::get_script_debugger()->debug(*this);
 		return true;
 	} else {
 		return false;
 	}
 }
 
-bool CSharpLanguage::debug_break(const String &p_error, bool p_allow_continue) {
-	if (EngineDebugger::is_active() && Thread::get_caller_id() == Thread::get_main_id()) {
-		CSharpThreadContext &stack = t_current_thread.context();
-		stack._debug_parse_err_line = -1;
-		stack._debug_parse_err_file = "";
-		stack._debug_error = p_error;
-		stack._debug_severity = p_allow_continue ? Severity::SEVERITY_BREAKPOINT : Severity::SEVERITY_FATAL;
-		EngineDebugger::get_script_debugger()->debug(stack);
-		return true;
-	} else {
-		return false;
-	}
+void CSharpThreadContext::debug_invalidate() {
+	_debug_severity = SEVERITY_NONE;
+	stack_trace_cached = false;
 }
+
+bool CSharpThreadContext::debug_break(const String &p_error, Severity p_severity) {
+	if (EngineDebugger::is_active()) {
+		_debug_parse_err_line = -1;
+		_debug_parse_err_file = "";
+		_debug_error = p_error;
+		_debug_severity = p_severity;
+		EngineDebugger::get_script_debugger()->debug(*this);
+		return true;
+	}
+	return false;
+}
+
+void CSharpThreadContext::debug_set_stack_trace_override(const Vector<StackInfo> &p_stack, const String &p_error) {
+	has_stack_trace_override = true;
+	stack_trace_override = p_stack;
+	_debug_error = p_error;
+}
+
+void CSharpThreadContext::debug_clear_stack_trace_override() {
+	has_stack_trace_override = false;
+	stack_trace_override.clear();
+}
+#endif
 
 void CSharpLanguage::_on_scripts_domain_unloaded() {
 	for (KeyValue<Object *, CSharpScriptBinding> &E : script_bindings) {
@@ -3382,7 +3400,7 @@ ScriptInstance *CSharpScript::instance_create(Object *p_this) {
 		StringName native_name = NATIVE_GDMONOCLASS_NAME(native);
 		if (!ClassDB::is_parent_class(p_this->get_class_name(), native_name)) {
 			if (EngineDebugger::is_active()) {
-				CSharpLanguage::get_singleton()->debug_break_parse(get_path(), 0,
+				CSharpLanguage::current_thread_implementation().debug_break_parse(get_path(), 0,
 						"Script inherits from native type '" + String(native_name) +
 								"', so it can't be instantiated in object of type: '" + p_this->get_class() + "'");
 			}

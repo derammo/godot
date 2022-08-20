@@ -433,9 +433,6 @@ public:
 	static void release_script_gchandle(MonoGCHandleData &p_gchandle);
 	static void release_script_gchandle(MonoObject *p_expected_obj, MonoGCHandleData &p_gchandle);
 
-	bool debug_break(const String &p_error, bool p_allow_continue = true);
-	bool debug_break_parse(const String &p_file, int p_line, const String &p_error);
-
 #ifdef GD_MONO_HOT_RELOAD
 	bool is_assembly_reloading_needed();
 	void reload_assemblies(bool p_soft_reload);
@@ -531,15 +528,21 @@ public:
 
 class CSharpThreadContext : public ScriptLanguageThreadContext {
 	friend class CSharpLanguage;
+
 	int _debug_parse_err_line = -1;
 	String _debug_parse_err_file;
 	String _debug_error;
-	Severity _debug_severity;
+	Severity _debug_severity = SEVERITY_NONE;
 	CSharpLanguage &parent;
 	DebugThreadID debug_thread_id;
 	bool is_main;
 	bool has_stack_trace_override;
+
 	Vector<StackInfo> stack_trace_override;
+	mutable Vector<StackInfo> stack_trace_cache;
+	mutable bool stack_trace_cached = false;
+
+	const Vector<StackInfo> &_get_current_stack_info() const;
 
 public:
 	ScriptLanguage *get_language() const override;
@@ -564,14 +567,15 @@ public:
 
 	// Set a specific stack trace to use instead of the current thread state.  Used during exception
 	// reporting.
-	void debug_set_stack_trace_override(const Vector<StackInfo> &p_stack) {
-		has_stack_trace_override = true;
-		stack_trace_override = p_stack;
-	}
-	void debug_clear_stack_trace_override() {
-		has_stack_trace_override = false;
-		stack_trace_override.clear();
-	}
+	void debug_set_stack_trace_override(const Vector<StackInfo> &p_stack, const String &p_error);
+
+	void debug_clear_stack_trace_override();
+
+	bool debug_break(const String &p_error, Severity p_severity);
+	bool debug_break_parse(const String &p_file, int p_line, const String &p_error);
+
+	// Called when the C# thread is about to execute, so the stack will be changing.
+	void debug_invalidate();
 #endif
 
 	CSharpThreadContext(CSharpLanguage &p_parent, const DebugThreadID &p_debug_thread_id, bool p_is_main) :

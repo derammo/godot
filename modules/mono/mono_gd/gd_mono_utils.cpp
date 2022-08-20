@@ -382,32 +382,12 @@ void debug_print_unhandled_exception(MonoException *p_exc) {
 	debug_send_unhandled_exception_error(p_exc);
 }
 
-void debug_send_unhandled_exception_error(MonoException *p_exc) {
+bool _build_exception_stack(Vector<ScriptLanguageThreadContext::StackInfo> &si, String &exc_msg, MonoException *&p_exc) {
 	using StackInfo = ScriptLanguageThreadContext::StackInfo;
-#ifdef DEBUG_ENABLED
-	if (!EngineDebugger::is_active()) {
-#ifdef TOOLS_ENABLED
-		if (Engine::get_singleton()->is_editor_hint()) {
-			ERR_PRINT(GDMonoUtils::get_exception_name_and_message(p_exc));
-		}
-#endif
-		return;
-	}
-
-	static thread_local bool _recursion_flag_ = false;
-	if (_recursion_flag_) {
-		return;
-	}
-	_recursion_flag_ = true;
-	SCOPE_EXIT { _recursion_flag_ = false; };
-
 	StackInfo separator;
 	separator.file = String();
 	separator.func = "--- " + RTR("End of inner exception stack trace") + " ---";
 	separator.line = 0;
-
-	Vector<StackInfo> si;
-	String exc_msg;
 
 	while (p_exc != nullptr) {
 		GDMonoClass *st_klass = CACHED_CLASS(System_Diagnostics_StackTrace);
@@ -421,7 +401,7 @@ void debug_send_unhandled_exception_error(MonoException *p_exc) {
 
 		if (unexpected_exc) {
 			GDMonoInternals::unhandled_exception(unexpected_exc);
-			return;
+			return false;
 		}
 
 		Vector<StackInfo> _si;
@@ -445,18 +425,80 @@ void debug_send_unhandled_exception_error(MonoException *p_exc) {
 
 		p_exc = (MonoException *)inner_exc;
 	}
+	return true;
+}
+
+void debug_send_unhandled_exception_error(MonoException *p_exc) {
+#ifdef DEBUG_ENABLED
+	static thread_local bool _recursion_flag_ = false;
+	if (_recursion_flag_) {
+		return;
+	}
+	_recursion_flag_ = true;
+	SCOPE_EXIT { _recursion_flag_ = false; };
+
+	if (!EngineDebugger::is_active()) {
+#ifdef TOOLS_ENABLED
+		if (Engine::get_singleton()->is_editor_hint()) {
+			ERR_PRINT(GDMonoUtils::get_exception_name_and_message(p_exc));
+		}
+#endif
+		return;
+	}
+
+	Vector<ScriptLanguageThreadContext::StackInfo> si;
+	String exc_msg;
+	if (!_build_exception_stack(si, exc_msg, p_exc)) {
+		return;
+	}
 
 	String file = si.size() ? si[0].file : __FILE__;
 	String func = si.size() ? si[0].func : FUNCTION_STR;
 	int line = si.size() ? si[0].line : __LINE__;
 	String error_msg = "Unhandled exception";
 
-	CSharpLanguage::current_thread_implementation().debug_set_stack_trace_override(si);
+	CSharpLanguage::current_thread_implementation().debug_set_stack_trace_override(si, error_msg);
 	EngineDebugger::get_singleton()->send_error(func, file, line, error_msg, exc_msg, true, ERR_HANDLER_ERROR);
 	CSharpLanguage::current_thread_implementation().debug_clear_stack_trace_override();
 #endif
 }
 
+void debug_break_for_unhandled_exception(MonoException *p_exc) {
+#ifdef DEBUG_ENABLED
+	static thread_local bool _recursion_flag_ = false;
+	if (_recursion_flag_) {
+		return;
+	}
+	_recursion_flag_ = true;
+	SCOPE_EXIT { _recursion_flag_ = false; };
+
+	if (!EngineDebugger::is_active()) {
+#ifdef TOOLS_ENABLED
+		if (Engine::get_singleton()->is_editor_hint()) {
+			ERR_PRINT(GDMonoUtils::get_exception_name_and_message(p_exc));
+		}
+#else
+		print_unhandled_exception(p_exc);
+#endif
+		return;
+	}
+
+	Vector<ScriptLanguageThreadContext::StackInfo> si;
+	String exc_msg;
+	if (!_build_exception_stack(si, exc_msg, p_exc)) {
+		return;
+	}
+
+	// REVISIT: For some reason the base code emits a trash frame at the front, with no information.
+	if (si.size() > 0 && si[0].file.is_empty() && si[0].func.is_empty()) {
+		si.remove_at(0);
+	}
+	CSharpThreadContext &stack = CSharpLanguage::current_thread_implementation();
+	stack.debug_set_stack_trace_override(si, exc_msg);
+	EngineDebugger::get_script_debugger()->debug(stack);
+	stack.debug_clear_stack_trace_override();
+#endif
+}
 void debug_unhandled_exception(MonoException *p_exc) {
 	GDMonoInternals::unhandled_exception(p_exc); // prints the exception as well
 }
@@ -677,4 +719,29 @@ StringName get_native_godot_class_name(GDMonoClass *p_class) {
 	StringName *ptr = GDMonoMarshal::unbox<StringName *>(CACHED_FIELD(StringName, ptr)->get_value(native_name_obj));
 	return ptr ? *ptr : StringName();
 }
+
+void begin_runtime_hook() {
+	if (EngineDebugger::is_active()) {
+		CSharpThreadContext &stack = CSharpLanguage::current_thread_implementation();
+		stack.debug_invalidate();
+	}
+}
+
+void end_runtime_hook() {
+	if (EngineDebugger::is_active()) {
+		CSharpThreadContext &stack = CSharpLanguage::current_thread_implementation();
+		bool do_break = stack.debug_handle_step();
+		// XXX get these from mono runtime
+		int line = 1;
+		StringName source;
+		if (EngineDebugger::get_script_debugger()->is_breakpoint(line, source)) {
+			do_break = true;
+		}
+		if (do_break) {
+			stack.debug_break("Breakpoint", CSharpThreadContext::SEVERITY_BREAKPOINT);
+		}
+		EngineDebugger::get_singleton()->line_poll();
+	}
+}
+
 } // namespace GDMonoUtils

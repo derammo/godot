@@ -118,18 +118,32 @@ void unhandled_exception(MonoException *p_exc) {
 	mono_print_unhandled_exception((MonoObject *)p_exc);
 	gd_unhandled_exception_event(p_exc);
 
-	if (GDMono::get_singleton()->get_unhandled_exception_policy() == GDMono::POLICY_TERMINATE_APP) {
-		// Too bad 'mono_invoke_unhandled_exception_hook' is not exposed to embedders
-		mono_unhandled_exception((MonoObject *)p_exc);
-		GDMono::unhandled_exception_hook((MonoObject *)p_exc, nullptr);
-		GD_UNREACHABLE();
-	} else {
-#ifdef DEBUG_ENABLED
-		GDMonoUtils::debug_send_unhandled_exception_error(p_exc);
-		if (EngineDebugger::is_active()) {
-			EngineDebugger::get_singleton()->poll_events(false);
+	switch (GDMono::get_singleton()->get_unhandled_exception_policy()) {
+		case GDMono::POLICY_TERMINATE_APP: {
+			// Too bad 'mono_invoke_unhandled_exception_hook' is not exposed to embedders
+			mono_unhandled_exception((MonoObject *)p_exc);
+			GDMono::unhandled_exception_hook((MonoObject *)p_exc, nullptr);
+			GD_UNREACHABLE();
+			break;
 		}
+		case GDMono::POLICY_LOG_ERROR: {
+#ifdef DEBUG_ENABLED
+			GDMonoUtils::debug_send_unhandled_exception_error(p_exc);
+			if (EngineDebugger::is_active()) {
+				EngineDebugger::get_singleton()->poll_events(false);
+			}
 #endif
+			break;
+		}
+		case GDMono::POLICY_DEBUG: {
+#ifdef DEBUG_ENABLED
+			GDMonoUtils::debug_break_for_unhandled_exception(p_exc);
+			if (EngineDebugger::is_active()) {
+				EngineDebugger::get_singleton()->poll_events(false);
+			}
+#endif
+			break;
+		}
 	}
 }
 

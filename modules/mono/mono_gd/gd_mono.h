@@ -78,7 +78,8 @@ class GDMono {
 public:
 	enum UnhandledExceptionPolicy {
 		POLICY_TERMINATE_APP,
-		POLICY_LOG_ERROR
+		POLICY_LOG_ERROR,
+		POLICY_DEBUG
 	};
 
 	struct LoadedApiAssembly {
