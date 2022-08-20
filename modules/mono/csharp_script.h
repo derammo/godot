@@ -336,7 +336,7 @@ struct CSharpScriptBinding {
 	MonoGCHandleData gchandle;
 	Object *owner = nullptr;
 
-	CSharpScriptBinding() {}
+	CSharpScriptBinding() = default;
 };
 
 class ManagedCallableMiddleman : public Object {
@@ -562,6 +562,8 @@ public:
 	DebugThreadID debug_get_thread_id() const override;
 	Severity debug_get_error_severity() const override;
 
+	void wait_resume() const override;
+
 #ifdef DEBUG_ENABLED
 	Vector<StackInfo> stack_trace_get_info(MonoObject *p_stack_trace) const;
 
@@ -575,13 +577,17 @@ public:
 	bool debug_break_parse(const String &p_file, int p_line, const String &p_error);
 
 	// Called when the C# thread is about to execute, so the stack will be changing.
-	void debug_invalidate();
+	void debug_enter_runtime();
+
+	// Called after the C# thread has executed some code, to allow the debugger to block or break, if necessary.
+	void debug_exit_runtime();
 #endif
 
 	CSharpThreadContext(CSharpLanguage &p_parent, const DebugThreadID &p_debug_thread_id, bool p_is_main) :
 			parent(p_parent) {
 		debug_thread_id = p_debug_thread_id;
 		is_main = p_is_main;
+		has_stack_trace_override = false;
 	}
 };
 

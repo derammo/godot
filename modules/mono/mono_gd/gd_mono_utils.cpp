@@ -722,24 +722,13 @@ StringName get_native_godot_class_name(GDMonoClass *p_class) {
 
 void begin_runtime_hook() {
 	if (EngineDebugger::is_active()) {
-		CSharpThreadContext &stack = CSharpLanguage::current_thread_implementation();
-		stack.debug_invalidate();
+		CSharpLanguage::current_thread_implementation().debug_enter_runtime();
 	}
 }
 
 void end_runtime_hook() {
 	if (EngineDebugger::is_active()) {
-		CSharpThreadContext &stack = CSharpLanguage::current_thread_implementation();
-		bool do_break = stack.debug_handle_step();
-		// XXX get these from mono runtime
-		int line = 1;
-		StringName source;
-		if (EngineDebugger::get_script_debugger()->is_breakpoint(line, source)) {
-			do_break = true;
-		}
-		if (do_break) {
-			stack.debug_break("Breakpoint", CSharpThreadContext::SEVERITY_BREAKPOINT);
-		}
+		CSharpLanguage::current_thread_implementation().debug_exit_runtime();
 		EngineDebugger::get_singleton()->line_poll();
 	}
 }

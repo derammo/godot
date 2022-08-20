@@ -303,33 +303,24 @@ public:
 	virtual void debug_get_stack_level_members(int p_level, List<String> *p_members, List<Variant> *p_values, int p_max_subitems = -1, int p_max_depth = -1) const = 0;
 	virtual ScriptInstance *debug_get_stack_level_instance(int p_level) const { return nullptr; }
 	virtual String debug_parse_stack_level_expression(int p_level, const String &p_expression, int p_max_subitems = -1, int p_max_depth = -1) const = 0;
-
 	virtual Vector<StackInfo> debug_get_current_stack_info() const { return Vector<StackInfo>(); }
 
 	/* STEP EXECUTION FUNCTIONS */
-
-	virtual bool debug_handle_step();
 
 	virtual void debug_step();
 	virtual void debug_next();
 	virtual void debug_step_out();
 	virtual void debug_continue();
 
+	bool debug_record_step_taken();
+	void debug_record_enter_frame();
+	void debug_record_exit_frame();
+
 	/* FUNCTIONS RELATING TO ACTUAL UNDERLYING THREAD */
 
-	void wait_resume() const {
-		resumption.wait();
-	}
-
-	void resume() const {
-		resumption.post();
-	}
-
-	bool is_dead() const {
-		// XXX implement: associated thread may have died without removing this from all collections
-		return false;
-	}
-
+	virtual void wait_resume() const;
+	virtual void resume() const;
+	virtual bool is_dead() const;
 	virtual bool is_main_thread() const = 0;
 };
 
@@ -439,7 +430,7 @@ public:
 		Vector<Pair<int, int>> matches;
 		int location = LOCATION_OTHER;
 
-		CodeCompletionOption() {}
+		CodeCompletionOption() = default;
 
 		CodeCompletionOption(const String &p_text, CodeCompletionKind p_kind, int p_location = LOCATION_OTHER) {
 			display = p_text;

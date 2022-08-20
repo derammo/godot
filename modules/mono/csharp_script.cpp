@@ -614,6 +614,13 @@ ScriptLanguageThreadContext::Severity CSharpThreadContext::debug_get_error_sever
 	return _debug_severity;
 }
 
+void CSharpThreadContext::wait_resume() const {
+	// Prepare stack frame for access by other threads while we are paused.
+	stack_trace_cached = false;
+	(void)_get_current_stack_info();
+	ScriptLanguageThreadContext::wait_resume();
+}
+
 const Vector<StackInfo> &CSharpThreadContext::_get_current_stack_info() const {
 #ifdef DEBUG_ENABLED
 	// Printing an error here will result in endless recursion, so we must be careful
@@ -643,7 +650,8 @@ const Vector<StackInfo> &CSharpThreadContext::_get_current_stack_info() const {
 	}
 
 	if (tid != Thread::get_caller_id()) {
-		// TODO we need to use the soft debugger API and implement real debugging or we can just store the stack every time we go into a call or return?
+		// TODO we need to use the soft debugger API to implement real debugging, so for now we store the stack every pause
+		// Cannot read the stack from another thread (does not normally happen.)
 		stack_trace_cache.clear();
 		return stack_trace_cache;
 	}
@@ -1327,9 +1335,28 @@ bool CSharpThreadContext::debug_break_parse(const String &p_file, int p_line, co
 	}
 }
 
-void CSharpThreadContext::debug_invalidate() {
+void CSharpThreadContext::debug_enter_runtime() {
 	_debug_severity = SEVERITY_NONE;
 	stack_trace_cached = false;
+	debug_record_enter_frame();
+}
+
+void CSharpThreadContext::debug_exit_runtime() {
+	// Potentially block in the debugger.
+	EngineDebugger::get_script_debugger()->step(*this);
+
+	// Check if we are supposed to break.
+	debug_record_exit_frame();
+	bool do_break = debug_record_step_taken();
+	// XXX get these from mono runtime
+	int line = 1;
+	StringName source;
+	if (EngineDebugger::get_script_debugger()->is_breakpoint(line, source)) {
+		do_break = true;
+	}
+	if (do_break) {
+		debug_break("Breakpoint", SEVERITY_BREAKPOINT);
+	}
 }
 
 bool CSharpThreadContext::debug_break(const String &p_error, Severity p_severity) {

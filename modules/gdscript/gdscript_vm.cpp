@@ -3404,7 +3404,7 @@ Variant GDScriptFunction::call(GDScriptInstance *p_instance, const Variant **p_a
 
 #ifdef DEBUG_ENABLED
 				if (EngineDebugger::is_active()) {
-					bool do_break = Stack::current().debug_handle_step();
+					bool do_break = Stack::current().debug_record_step_taken();
 
 					if (EngineDebugger::get_script_debugger()->is_breakpoint(line, source)) {
 						do_break = true;

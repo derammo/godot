@@ -349,7 +349,7 @@ ScriptCodeCompletionCache::ScriptCodeCompletionCache() {
 	singleton = this;
 }
 
-bool ScriptLanguageThreadContext::debug_handle_step() {
+bool ScriptLanguageThreadContext::debug_record_step_taken() {
 	if (steps_left > 0) {
 		if (frames_left <= 0) {
 			--steps_left;
@@ -358,6 +358,33 @@ bool ScriptLanguageThreadContext::debug_handle_step() {
 			return true;
 		}
 	}
+	return false;
+}
+
+void ScriptLanguageThreadContext::debug_record_enter_frame() {
+	if (steps_left > 0 && frames_left >= 0) {
+		// Need to exit from this frame before steps count again.
+		++frames_left;
+	}
+}
+
+void ScriptLanguageThreadContext::debug_record_exit_frame() {
+	if (steps_left > 0 && frames_left >= 0) {
+		// Pop out until we start consuming steps again.
+		--frames_left;
+	}
+}
+
+void ScriptLanguageThreadContext::wait_resume() const {
+	resumption.wait();
+}
+
+void ScriptLanguageThreadContext::resume() const {
+	resumption.post();
+}
+
+bool ScriptLanguageThreadContext::is_dead() const {
+	// XXX implement: associated thread may have died without removing this from all collections
 	return false;
 }
 

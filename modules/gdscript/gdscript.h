@@ -464,11 +464,8 @@ class GDScriptThreadContext : public ScriptLanguageThreadContext {
 	CallLevel *_call_stack = nullptr;
 
 public:
-	_FORCE_INLINE_ void enter_function(GDScriptInstance *p_instance, GDScriptFunction *p_function, Variant *p_stack, int *p_ip, int *p_line) {
-		if (steps_left > 0 && frames_left >= 0) {
-			// Need to exit from this frame before steps count again.
-			++frames_left;
-		}
+	void enter_function(GDScriptInstance *p_instance, GDScriptFunction *p_function, Variant *p_stack, int *p_ip, int *p_line) {
+		debug_record_enter_frame();
 
 		if (_debug_call_stack_pos >= _debug_max_call_stack) {
 			// stack overflow
@@ -486,11 +483,8 @@ public:
 		_debug_call_stack_pos++;
 	}
 
-	_FORCE_INLINE_ void exit_function() {
-		if (steps_left > 0 && frames_left >= 0) {
-			// Pop out until we start consuming steps again.
-			--frames_left;
-		}
+	void exit_function() {
+		debug_record_exit_frame();
 
 		if (_debug_call_stack_pos == 0) {
 			_debug_error = "Stack Underflow (Engine Bug)";

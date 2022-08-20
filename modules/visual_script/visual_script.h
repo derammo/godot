@@ -608,11 +608,8 @@ public:
 	void debug_get_stack_level_members(int p_level, List<String> *p_members, List<Variant> *p_values, int p_max_subitems = -1, int p_max_depth = -1) const override;
 	String debug_parse_stack_level_expression(int p_level, const String &p_expression, int p_max_subitems = -1, int p_max_depth = -1) const override;
 
-	_FORCE_INLINE_ void enter_function(VisualScriptInstance *p_instance, const StringName *p_function, Variant *p_stack, Variant **p_work_mem, int *current_id) {
-		if (_step_overs_left > 0 && _frames_left >= 0) {
-			// Need to exit from this frame before steps count again.
-			++_frames_left;
-		}
+	void enter_function(VisualScriptInstance *p_instance, const StringName *p_function, Variant *p_stack, Variant **p_work_mem, int *current_id) {
+		debug_record_enter_frame();
 
 		if (_debug_call_stack_pos >= _debug_max_call_stack) {
 			// Stack overflow.
@@ -629,11 +626,8 @@ public:
 		_debug_call_stack_pos++;
 	}
 
-	_FORCE_INLINE_ void exit_function() {
-		if (_step_overs_left > 0 && _frames_left >= 0) {
-			// Pop out until we start consuming steps again.
-			--_frames_left;
-		}
+	void exit_function() {
+		debug_record_exit_frame();
 
 		if (_debug_call_stack_pos == 0) {
 			_debug_error = "Stack underflow (engine bug), please report.";

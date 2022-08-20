@@ -86,14 +86,23 @@ bool ScriptDebugger::_try_claim_debugger(const ScriptLanguageThreadContext &p_an
 	return true;
 }
 
-void ScriptDebugger::_step_secondary_thread(const ScriptLanguageThreadContext &p_secondary_thread) {
+void ScriptDebugger::step(ScriptLanguageThreadContext &p_any_thread) {
+	if (p_any_thread.is_main_thread()) {
+		EngineDebugger::get_singleton()->poll_events(false);
+	}
+
+	if (_break_requested.is_set()) {
+		debug(p_any_thread);
+		// We may have failed to debug, continue below like a secondary thread.
+	}
+
 	if (!_hold_threads.is_set()) {
-		// Not the focused thread, only pause if requested.
+		// Only pause if requested.  This is also where we return after successful debugging.
 		return;
 	}
 
 	// check in this context (now conceptually owned by debugger)
-	const DebugThreadID tid = p_secondary_thread.debug_get_thread_id();
+	const DebugThreadID tid = p_any_thread.debug_get_thread_id();
 	{
 		MutexLock<BinaryMutex> lock(_mutex_thread_transfer);
 		// check again because we could have just been resumed and we
@@ -101,28 +110,15 @@ void ScriptDebugger::_step_secondary_thread(const ScriptLanguageThreadContext &p
 		if (!_hold_threads.is_set()) {
 			return;
 		}
-		_held_threads[tid] = Ref<ScriptLanguageThreadContext>(&p_secondary_thread);
-		// unlocks on end of scope
+		_held_threads[tid] = Ref<ScriptLanguageThreadContext>(&p_any_thread);
 	}
 
-	EngineDebugger::get_singleton()->thread_paused(p_secondary_thread);
-	p_secondary_thread.wait_resume();
+	EngineDebugger::get_singleton()->thread_paused(p_any_thread);
+	p_any_thread.wait_resume();
 
 	// Reclaim our context to resume running.
 	MutexLock<BinaryMutex> lock(_mutex_thread_transfer);
 	_held_threads.erase(tid);
-}
-
-void ScriptDebugger::step(ScriptLanguageThreadContext &p_any_thread) {
-	if (_break_requested.is_set()) {
-		debug(p_any_thread);
-		return;
-	}
-	if (p_any_thread.is_main_thread()) {
-		EngineDebugger::get_singleton()->poll_events(false);
-	} else {
-		_step_secondary_thread(p_any_thread);
-	}
 }
 
 void ScriptDebugger::debug_request_break() {

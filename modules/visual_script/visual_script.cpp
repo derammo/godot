@@ -1500,7 +1500,7 @@ Variant VisualScriptInstance::_call_internal(const StringName &p_method, void *p
 
 #ifdef DEBUG_ENABLED
 		if (EngineDebugger::is_active()) {
-			bool do_break = t_current_thread.context().debug_handle_step();
+			bool do_break = t_current_thread.context().debug_record_step_taken();
 
 			if (EngineDebugger::get_script_debugger()->is_breakpoint(current_node_id, source)) {
 				do_break = true;
@@ -2136,7 +2136,7 @@ void VisualScriptFunctionState::connect_to_signal(Object *p_obj, const String &p
 	for (int i = 0; i < p_binds.size(); i++) {
 		binds.push_back(p_binds[i]);
 	}
-	binds.push_back(Ref<VisualScriptFunctionState>(this)); //add myself on the back to avoid dying from unreferencing
+	binds.push_back(Ref<VisualScriptFunctionState>(this)); // add myself on the back to avoid dying from unreferencing
 
 	Vector<const Variant *> bind_ptrs;
 	bind_ptrs.resize(p_binds.size());

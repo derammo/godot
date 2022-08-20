@@ -64,7 +64,6 @@ class ScriptDebugger {
 	typedef HashMap<DebugThreadID, Ref<ScriptLanguageThreadContext>, VariantHasher, VariantComparator>::ConstIterator ConstHeldThreadsIterator;
 
 	bool _try_claim_debugger(const ScriptLanguageThreadContext &p_any_thread);
-	void _step_secondary_thread(const ScriptLanguageThreadContext &p_secondary_thread);
 
 public:
 	/* BREAKPOINTS */
